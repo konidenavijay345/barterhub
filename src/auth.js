@@ -68,7 +68,9 @@ export const auth = {
     await userDb.update(userId, { hash: newHash });
   },
 
-  async seedAdmin() {
+ async seedAdmin() {
+  try {
+    console.log("Seeding admin user if none exist..."); 
     const users = await userDb.getAll();
     if (users.length === 0) {
       const hash = await sha256("admin123" + SALT);
@@ -80,6 +82,12 @@ export const auth = {
         joined: new Date().toISOString(),
         active: true,
       });
+      console.log("✅ Admin created: admin / admin123");
+    } else {
+      console.log("✅ Users exist, skipping seedAdmin");
     }
-  },
+  } catch (e) {
+    console.warn("⚠️ seedAdmin failed:", e.message);
+  }
+},
 };

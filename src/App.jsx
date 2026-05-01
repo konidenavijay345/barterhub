@@ -986,12 +986,21 @@ export default function App() {
   }
 
   useEffect(() => {
-    async function init() {
-      await auth.seedAdmin();
-      const me = await auth.me();
-      setUser(me);
-      await loadAll();
-      setLoading(false);
+    async function init(){
+  try {
+    console.log("1. starting...");
+    await auth.seedAdmin();
+    console.log("2. seedAdmin done");
+    const me = await auth.me();
+    console.log("3. auth.me done", me);
+    await loadAll();
+    console.log("4. loadAll done");
+  } catch(e) {
+    console.error("Init failed:", e);
+  } finally {
+    setLoading(false);
+  }
+
     }
     init();
   }, []);

@@ -9,12 +9,12 @@ import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCC1nLCrQFJVmk5fiPbBILMfLvtJ3qOxk8",
-  authDomain: "barterhub-17d81.firebaseapp.com",
-  projectId: "barterhub-17d81",
-  storageBucket: "barterhub-17d81.firebasestorage.app",
-  messagingSenderId: "1050729474762",
-  appId: "1:1050729474762:web:8dd647d9c43c04d5896233"
+  apiKey: "AIzaSyA2XBJuywzCZd1BGMRKrex-IGDcmKrAp1M",
+  authDomain: "barterhub-2cd8f.firebaseapp.com",
+  projectId: "barterhub-2cd8f",
+  storageBucket: "barterhub-2cd8f.firebasestorage.app",
+  messagingSenderId: "207157786096",
+  appId: "1:207157786096:web:b11e4f54af6ff5831cd935"
 };
 
 const app = initializeApp(firebaseConfig);
