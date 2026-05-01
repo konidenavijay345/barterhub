@@ -39,11 +39,26 @@ export const userDb = {
   async create(data) {
     try {
       const ref = doc(col("users"));
-      await setDoc(ref, { ...data, id: ref.id });
-      return { ...data, id: ref.id };
+      const users = await getAll("users");
+      const userNumber = data.userNumber || nextUserNumber(users);
+      await setDoc(ref, { ...data, id: ref.id, userNumber });
+      return { ...data, id: ref.id, userNumber };
     } catch (e) {
       console.error("userDb.create failed:", e);
       throw e;
+    }
+  },
+
+  async ensureUserNumbers() {
+    try {
+      const users = await getAll("users");
+      let next = nextUserNumber(users);
+      const missing = users.filter(u => !u.userNumber);
+      await Promise.all(missing.map(u => updateDoc(doc(db, "users", u.id), { userNumber: next++ })));
+      return missing.length;
+    } catch (e) {
+      console.error("userDb.ensureUserNumbers failed:", e);
+      return 0;
     }
   },
 
@@ -151,6 +166,9 @@ export const exchangeDb = {
       const ref = await addDoc(col("exchanges"), {
         ...data,
         createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        seenByOwner: false,
+        statusSeenByOfferer: true,
       });
       return { ...data, id: ref.id };
     } catch (e) {
@@ -161,10 +179,34 @@ export const exchangeDb = {
 
   async update(id, data) {
     try {
-      await updateDoc(doc(db, "exchanges", id), data);
+      await updateDoc(doc(db, "exchanges", id), { ...data, updatedAt: new Date().toISOString() });
     } catch (e) {
       console.error("exchangeDb.update failed:", e);
       throw e;
+    }
+  },
+
+  async markListingSeen(listingId, ownerId) {
+    try {
+      const q = query(col("exchanges"), where("listingId", "==", listingId));
+      const snap = await getDocs(q);
+      await Promise.all(snap.docs.map(d => {
+        const ex = d.data();
+        if (ex.ownerId && ex.ownerId !== ownerId) return Promise.resolve();
+        return updateDoc(d.ref, { seenByOwner: true, ownerSeenAt: new Date().toISOString() });
+      }));
+    } catch (e) {
+      console.error("exchangeDb.markListingSeen failed:", e);
+    }
+  },
+
+  async markOffererStatusSeen(offererId) {
+    try {
+      const q = query(col("exchanges"), where("offererId", "==", offererId));
+      const snap = await getDocs(q);
+      await Promise.all(snap.docs.map(d => updateDoc(d.ref, { statusSeenByOfferer: true, offererSeenAt: new Date().toISOString() })));
+    } catch (e) {
+      console.error("exchangeDb.markOffererStatusSeen failed:", e);
     }
   },
 
@@ -174,6 +216,53 @@ export const exchangeDb = {
     } catch (e) {
       console.error("exchangeDb.delete failed:", e);
       throw e;
+    }
+  },
+};
+
+// Notifications
+
+export const notificationDb = {
+  async getAll() {
+    try {
+      const snap = await getDocs(col("notifications"));
+      const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    } catch (e) {
+      console.error("notificationDb.getAll failed:", e);
+      return [];
+    }
+  },
+
+  async create(data) {
+    try {
+      const ref = await addDoc(col("notifications"), {
+        ...data,
+        read: false,
+        createdAt: new Date().toISOString(),
+      });
+      return { ...data, id: ref.id };
+    } catch (e) {
+      console.error("notificationDb.create failed:", e);
+      return null;
+    }
+  },
+
+  async markRead(id) {
+    try {
+      await updateDoc(doc(db, "notifications", id), { read: true, readAt: new Date().toISOString() });
+    } catch (e) {
+      console.error("notificationDb.markRead failed:", e);
+    }
+  },
+
+  async markListingRead(userId, listingId) {
+    try {
+      const q = query(col("notifications"), where("userId", "==", userId), where("listingId", "==", listingId));
+      const snap = await getDocs(q);
+      await Promise.all(snap.docs.map(d => updateDoc(d.ref, { read: true, readAt: new Date().toISOString() })));
+    } catch (e) {
+      console.error("notificationDb.markListingRead failed:", e);
     }
   },
 };
@@ -251,4 +340,9 @@ function generateToken() {
 
 export function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+}
+
+function nextUserNumber(users) {
+  const max = users.reduce((n, u) => Math.max(n, Number(u.userNumber) || 1000), 1000);
+  return max + 1;
 }

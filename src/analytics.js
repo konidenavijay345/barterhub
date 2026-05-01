@@ -5,6 +5,12 @@ import { db } from "./firebase";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 
 let cachedLocation = null;
+let sessionId = sessionStorage.getItem("bh_session_id");
+
+if (!sessionId) {
+  sessionId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  sessionStorage.setItem("bh_session_id", sessionId);
+}
 
 // Fetch IP-based location once and cache it
 async function getLocation() {
@@ -36,9 +42,13 @@ export async function trackEvent({ type, label = "", page = "", userId = null, e
       label,          // button label or page title
       page,           // current page id
       userId,         // logged-in user id or null
+      userNumber: extra.userNumber || null,
+      sessionId,
       location,       // { city, country, lat, lng, ... }
       userAgent: navigator.userAgent,
       referrer: document.referrer || "",
+      path: window.location.pathname,
+      screen: { width: window.innerWidth, height: window.innerHeight },
       timestamp: serverTimestamp(),
       localTime: new Date().toISOString(),
       ...extra,
@@ -49,10 +59,10 @@ export async function trackEvent({ type, label = "", page = "", userId = null, e
   }
 }
 
-export function trackPageView(page, userId = null) {
-  return trackEvent({ type: "page_view", label: page, page, userId });
+export function trackPageView(page, userId = null, extra = {}) {
+  return trackEvent({ type: "page_view", label: page, page, userId, extra });
 }
 
-export function trackCTA(label, page, userId = null) {
-  return trackEvent({ type: "cta_click", label, page, userId });
+export function trackCTA(label, page, userId = null, extra = {}) {
+  return trackEvent({ type: "cta_click", label, page, userId, extra });
 }

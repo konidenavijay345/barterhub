@@ -5,7 +5,7 @@ service cloud.firestore {
     // Allow read/write to analytics events (write-only for public, read only for server)
     match /analytics_events/{doc} {
       allow create: if true;
-      allow read: if false; // Only read via admin SDK or Firebase Console
+      allow read: if true;
     }
 
     // Sessions — only owner can read/delete
@@ -27,6 +27,12 @@ service cloud.firestore {
 
     // Exchanges — public read, write
     match /exchanges/{exchangeId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Notifications - lightweight offer alerts
+    match /notifications/{notificationId} {
       allow read: if true;
       allow write: if true;
     }

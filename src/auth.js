@@ -42,6 +42,7 @@ export const auth = {
     if (hash !== user.hash) throw new Error("Invalid password");
 
     await sessionDb.create(user.id);
+    await userDb.update(user.id, { lastLoginAt: new Date().toISOString() });
     return user;
   },
 
@@ -81,6 +82,7 @@ export const auth = {
         role: "admin",
         joined: new Date().toISOString(),
         active: true,
+        userNumber: 1001,
       });
       console.log("✅ Admin created: admin / admin123");
     } else {
