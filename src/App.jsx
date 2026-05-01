@@ -21,6 +21,28 @@ function RedDot({ show }) {
   return <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#dc2626", display: "inline-block", boxShadow: "0 0 0 2px #fff" }} />;
 }
 
+function interestScore(listing, user) {
+  if (!user) return listing.likeCount || listing.likedBy?.length || 0;
+  const interests = user.interests || {};
+  return (interests[listing.category] || 0) * 10 + (listing.likeCount || listing.likedBy?.length || 0);
+}
+
+function sortByInterest(listings, user) {
+  return [...listings].sort((a, b) => interestScore(b, user) - interestScore(a, user) || new Date(b.createdAt) - new Date(a.createdAt));
+}
+
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+  return matches;
+}
+
 function fileToBase64(file) {
   return new Promise((res, rej) => {
     const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej; r.readAsDataURL(file);
@@ -67,8 +89,9 @@ function Alert({ type, msg, onClose }) {
   );
 }
 
-function ListingCard({ listing, users, onClick, page, currentUser }) {
+function ListingCard({ listing, users, onClick, page, currentUser, onToggleLike }) {
   const owner = users.find(u => u.id === listing.userId);
+  const liked = currentUser && Array.isArray(listing.likedBy) && listing.likedBy.includes(currentUser.id);
   return (
     <div
       onClick={() => { trackCTA(`listing_card_${listing.title}`, page, currentUser?.id); onClick(listing); }}
@@ -84,7 +107,16 @@ function ListingCard({ listing, users, onClick, page, currentUser }) {
       <div style={{ padding: "12px 14px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6, gap: 8 }}>
           <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500, flex: 1, lineHeight: 1.3 }}>{listing.title}</h3>
-          <Badge status={listing.status} />
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button
+              onClick={e => { e.stopPropagation(); onToggleLike?.(listing); }}
+              title={liked ? "Unlike" : "Like"}
+              style={{ border: "none", background: liked ? "#fee2e2" : "#f9fafb", color: liked ? "#dc2626" : "#6b7280", borderRadius: 999, padding: "3px 8px", fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+            >
+              {liked ? "♥" : "♡"} {listing.likeCount || listing.likedBy?.length || 0}
+            </button>
+            <Badge status={listing.status} />
+          </div>
         </div>
         <p style={{ margin: "0 0 8px", fontSize: 13, color: "#6b7280", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{listing.description}</p>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
@@ -197,13 +229,14 @@ function RegisterPage({ onLogin, onNavigate }) {
   );
 }
 
-function HomePage({ onNavigate, listings, users, currentUser }) {
-  const featured = listings.filter(l => l.status === "available").slice(0, 6);
+function HomePage({ onNavigate, listings, users, currentUser, onToggleLike }) {
+  const mobile = useMediaQuery("(max-width: 640px)");
+  const featured = sortByInterest(listings.filter(l => l.status === "available" && l.userId !== currentUser?.id), currentUser).slice(0, 6);
   return (
     <div>
-      <div style={{ background: "linear-gradient(135deg,#78350f 0%,#d97706 100%)", padding: "4rem 2rem", textAlign: "center", color: "white" }}>
+      <div style={{ background: "linear-gradient(135deg,#78350f 0%,#d97706 100%)", padding: mobile ? "2.5rem 1rem" : "4rem 2rem", textAlign: "center", color: "white" }}>
         <div style={{ fontSize: 40, marginBottom: 16 }}>⚖️</div>
-        <h1 style={{ margin: "0 0 1rem", fontSize: 34, fontWeight: 500, fontFamily: "Georgia, serif", lineHeight: 1.3 }}>Trade What You Have.<br />Get What You Need.</h1>
+        <h1 style={{ margin: "0 0 1rem", fontSize: mobile ? 26 : 34, fontWeight: 500, fontFamily: "Georgia, serif", lineHeight: 1.25 }}>Trade What You Have.<br />Get What You Need.</h1>
         <p style={{ margin: "0 0 2rem", fontSize: 15, opacity: 0.9, maxWidth: 480, marginLeft: "auto", marginRight: "auto" }}>A community marketplace for bartering goods — no money needed.</p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
           <button onClick={() => { trackCTA("hero_browse_listings", "home", currentUser?.id); onNavigate("browse"); }}
@@ -217,7 +250,7 @@ function HomePage({ onNavigate, listings, users, currentUser }) {
         </div>
       </div>
 
-      <div style={{ padding: "3rem 2rem", maxWidth: 900, margin: "0 auto" }}>
+      <div style={{ padding: mobile ? "2rem 1rem" : "3rem 2rem", maxWidth: 900, margin: "0 auto" }}>
         <h2 style={{ textAlign: "center", marginBottom: "2rem", fontSize: 20, fontWeight: 500, fontFamily: "Georgia, serif" }}>How it works</h2>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 20 }}>
           {[
@@ -236,16 +269,16 @@ function HomePage({ onNavigate, listings, users, currentUser }) {
       </div>
 
       {featured.length > 0 && (
-        <div style={{ padding: "0 2rem 3rem", maxWidth: 900, margin: "0 auto" }}>
+        <div style={{ padding: mobile ? "0 1rem 2rem" : "0 2rem 3rem", maxWidth: 900, margin: "0 auto" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 500, fontFamily: "Georgia, serif" }}>Recent listings</h2>
+            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 500, fontFamily: "Georgia, serif" }}>{currentUser?.interests ? "Recommended listings" : "Recent listings"}</h2>
             <button onClick={() => { trackCTA("home_see_all", "home", currentUser?.id); onNavigate("browse"); }}
               style={{ background: "none", border: "none", color: "#d97706", cursor: "pointer", fontSize: 14 }}>See all →</button>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
             {featured.map(l => (
               <ListingCard key={l.id} listing={l} users={users} page="home" currentUser={currentUser}
-                onClick={() => onNavigate("item", l.id)} />
+                onClick={() => onNavigate("item", l.id)} onToggleLike={onToggleLike} />
             ))}
           </div>
         </div>
@@ -254,12 +287,13 @@ function HomePage({ onNavigate, listings, users, currentUser }) {
   );
 }
 
-function BrowsePage({ listings, users, onNavigate, currentUser }) {
+function BrowsePage({ listings, users, onNavigate, currentUser, onToggleLike }) {
+  const mobile = useMediaQuery("(max-width: 640px)");
   const [search, setSearch] = useState(""), [cat, setCat] = useState(""), [status, setStatus] = useState("available");
-  const filtered = listings.filter(l => {
+  const filtered = sortByInterest(listings.filter(l => {
     const ms = !search || l.title.toLowerCase().includes(search.toLowerCase()) || l.description.toLowerCase().includes(search.toLowerCase());
     return ms && (!cat || l.category === cat) && (!status || l.status === status);
-  });
+  }), currentUser);
   return (
     <div style={{ maxWidth: 1000, margin: "0 auto", padding: "2rem 1rem" }}>
       <h1 style={{ margin: "0 0 1.5rem", fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif" }}>Browse listings</h1>
@@ -280,13 +314,13 @@ function BrowsePage({ listings, users, onNavigate, currentUser }) {
       {filtered.length === 0
         ? <div style={{ textAlign: "center", padding: "4rem 0", color: "#6b7280" }}>No listings found.</div>
         : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
-            {filtered.map(l => <ListingCard key={l.id} listing={l} users={users} page="browse" currentUser={currentUser} onClick={() => onNavigate("item", l.id)} />)}
+            {filtered.map(l => <ListingCard key={l.id} listing={l} users={users} page="browse" currentUser={currentUser} onClick={() => onNavigate("item", l.id)} onToggleLike={onToggleLike} />)}
           </div>}
     </div>
   );
 }
 
-function PostItemPage({ user, onPosted, onNavigate }) {
+function PostItemPage({ user, users, onPosted, onNavigate }) {
   const [form, setForm] = useState({ title: "", description: "", category: "", wantInReturn: "" });
   const [image, setImage] = useState(null), [preview, setPreview] = useState(null);
   const [err, setErr] = useState(""), [success, setSuccess] = useState(""), [loading, setLoading] = useState(false);
@@ -310,8 +344,14 @@ function PostItemPage({ user, onPosted, onNavigate }) {
     if (!form.title || !form.description || !form.category || !form.wantInReturn) { setErr("Please fill all required fields"); return; }
     setErr(""); setLoading(true);
     try {
-      await listingDb.create({ userId: user.id, title: form.title.trim(), description: form.description.trim(), category: form.category, wantInReturn: form.wantInReturn.trim(), imageBase64: image || null, status: "available" });
-      trackEvent({ type: "listing_posted", label: form.title, page: "post", userId: user.id, extra: { userNumber: user.userNumber || null, listingTitle: form.title } });
+      const listing = await listingDb.create({ userId: user.id, title: form.title.trim(), description: form.description.trim(), category: form.category, wantInReturn: form.wantInReturn.trim(), imageBase64: image || null, status: "available", likedBy: [], likeCount: 0 });
+      const admins = users.filter(u => u.role === "admin" && u.id !== user.id);
+      const interestedUsers = users.filter(u => u.id !== user.id && u.role !== "admin" && (u.interests?.[form.category] || 0) > 0);
+      await Promise.all([
+        ...admins.map(admin => notificationDb.create({ userId: admin.id, actorId: user.id, actorNumber: user.userNumber || null, type: "admin_listing_added", title: "New listing added", message: `${user.username} posted ${form.title}`, listingId: listing.id })),
+        ...interestedUsers.map(target => notificationDb.create({ userId: target.id, actorId: user.id, actorNumber: user.userNumber || null, type: "interest_match", title: "New item in your interest", message: `${form.title} was posted in ${form.category}`, listingId: listing.id }))
+      ]);
+      trackEvent({ type: "listing_posted", label: form.title, page: "post", userId: user.id, extra: { userNumber: user.userNumber || null, listingId: listing.id, listingTitle: form.title, category: form.category } });
       setSuccess("Your item has been posted successfully!");
       setForm({ title: "", description: "", category: "", wantInReturn: "" }); setImage(null); setPreview(null);
       if (fileRef.current) fileRef.current.value = "";
@@ -369,6 +409,7 @@ function PostItemPage({ user, onPosted, onNavigate }) {
 }
 
 function ItemDetailPage({ listingId, listings, users, exchanges, user, onNavigate, onRefresh }) {
+  const mobile = useMediaQuery("(max-width: 760px)");
   const listing = listings.find(l => l.id === listingId);
   const [offerForm, setOfferForm] = useState({ title: "", description: "" });
   const [offerImage, setOfferImage] = useState(null);
@@ -420,6 +461,16 @@ function ItemDetailPage({ listingId, listings, users, exchanges, user, onNavigat
         listingId: listing.id,
         exchangeId: exchange.id,
       });
+      await Promise.all(users.filter(u => u.role === "admin" && u.id !== user.id).map(admin => notificationDb.create({
+        userId: admin.id,
+        actorId: user.id,
+        actorNumber: user.userNumber || null,
+        type: "admin_offer_added",
+        title: "New offer added",
+        message: `${user.username} offered ${offerForm.title} for ${listing.title}`,
+        listingId: listing.id,
+        exchangeId: exchange.id,
+      })));
       trackEvent({ type: "offer_submitted", label: offerForm.title, page: "item", userId: user.id, extra: { userNumber: user.userNumber, listingId: listing.id, listingTitle: listing.title, exchangeId: exchange.id } });
       setSuccess("Offer submitted!"); setShowOffer(false); setOfferForm({ title: "", description: "" }); setOfferImage(null); onRefresh();
     } catch (e) { setErr(e.message); } finally { setLoading(false); }
@@ -440,6 +491,16 @@ function ItemDetailPage({ listingId, listings, users, exchanges, user, onNavigat
         listingId: listing.id,
         exchangeId: exId,
       });
+      await Promise.all(users.filter(u => u.role === "admin" && u.id !== user.id).map(admin => notificationDb.create({
+        userId: admin.id,
+        actorId: user.id,
+        actorNumber: user.userNumber || null,
+        type: `admin_offer_${status}`,
+        title: `Offer ${status}`,
+        message: `${user.username} ${status} an offer for ${listing.title}`,
+        listingId: listing.id,
+        exchangeId: exId,
+      })));
       trackEvent({ type: `offer_${status}`, label: listing.title, page: "item", userId: user.id, extra: { userNumber: user.userNumber, listingId: listing.id, exchangeId: exId, targetUserId: exchange.offererId } });
     }
     onRefresh();
@@ -463,8 +524,8 @@ function ItemDetailPage({ listingId, listings, users, exchanges, user, onNavigat
       <button onClick={() => onNavigate("browse")} style={{ background: "none", border: "none", color: "#6b7280", cursor: "pointer", marginBottom: "1rem", fontSize: 14 }}>← Back to browse</button>
       <Alert type="error" msg={err} onClose={() => setErr("")} />
       <Alert type="success" msg={success} onClose={() => setSuccess("")} />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
-        <div style={{ background: "#f9fafb", borderRadius: 12, overflow: "hidden", minHeight: 280, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: mobile ? 16 : 24, marginBottom: 24 }}>
+        <div style={{ background: "#f9fafb", borderRadius: 12, overflow: "hidden", minHeight: mobile ? 220 : 280, display: "flex", alignItems: "center", justifyContent: "center" }}>
           {listing.imageBase64
             ? <img src={listing.imageBase64} alt={listing.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             : <span style={{ fontSize: 64, color: "#9ca3af" }}>📦</span>}
@@ -685,6 +746,38 @@ function ProfilePage({ user, onLogout }) {
   );
 }
 
+function NotificationsPage({ user, notifications, onNavigate, onMarkAllRead }) {
+  useEffect(() => {
+    if (user && notifications.some(n => !n.read)) onMarkAllRead();
+  }, [user?.id, notifications.length]);
+
+  if (!user) return <div style={{ textAlign: "center", padding: "4rem" }}><button onClick={() => onNavigate("login")} style={{ color: "#d97706", background: "none", border: "none", cursor: "pointer" }}>Sign in →</button></div>;
+
+  return (
+    <div style={{ maxWidth: 760, margin: "2rem auto", padding: "0 1rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: "1rem" }}>
+        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif" }}>Notifications</h1>
+        <span style={{ fontSize: 12, color: "#6b7280" }}>{notifications.filter(n => !n.read).length} unread</span>
+      </div>
+      {notifications.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "4rem 0", color: "#6b7280" }}>No notifications yet.</div>
+      ) : notifications.map(n => (
+        <button
+          key={n.id}
+          onClick={() => n.listingId ? onNavigate("item", n.listingId) : null}
+          style={{ width: "100%", textAlign: "left", background: n.read ? "#fff" : "#fffbeb", border: "0.5px solid #e5e7eb", borderRadius: 8, padding: "12px 14px", marginBottom: 10, cursor: n.listingId ? "pointer" : "default" }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+            <strong style={{ fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><RedDot show={!n.read} />{n.title}</strong>
+            <span style={{ fontSize: 11, color: "#9ca3af", whiteSpace: "nowrap" }}>{timeAgo(n.createdAt)}</span>
+          </div>
+          <p style={{ margin: "6px 0 0", color: "#6b7280", fontSize: 13 }}>{n.message}</p>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // ── Analytics Admin Section ───────────────────────────────────────────────────
 
 function AnalyticsPage({ users }) {
@@ -880,6 +973,7 @@ function AnalyticsPage({ users }) {
 // ── Admin Page ────────────────────────────────────────────────────────────────
 
 function CleanAnalyticsPage({ users, listings, exchanges }) {
+  const mobile = useMediaQuery("(max-width: 760px)");
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [queryText, setQueryText] = useState("");
@@ -925,9 +1019,9 @@ function CleanAnalyticsPage({ users, listings, exchanges }) {
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
-        <input value={queryText} onChange={e => setQueryText(e.target.value)} placeholder="Search user ID, name, email, event, listing" style={{ minWidth: 260, flex: 1 }} />
-        <div style={{ display: "flex", gap: 6 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: mobile ? "stretch" : "center", justifyContent: "space-between", flexWrap: "wrap", flexDirection: mobile ? "column" : "row" }}>
+        <input value={queryText} onChange={e => setQueryText(e.target.value)} placeholder="Search user ID, name, email, event, listing" style={{ minWidth: mobile ? 0 : 260, flex: 1, width: mobile ? "100%" : undefined }} />
+        <div style={{ display: "flex", gap: 6, overflowX: mobile ? "auto" : "visible", paddingBottom: mobile ? 2 : 0 }}>
           {["24h", "7d", "30d", "all"].map(r => (
             <button key={r} onClick={() => setTimeRange(r)} style={{ padding: "7px 12px", border: "0.5px solid #e5e7eb", borderRadius: 8, background: timeRange === r ? "#111827" : "#fff", color: timeRange === r ? "#fff" : "#374151", cursor: "pointer", fontSize: 12 }}>{r === "all" ? "All" : r}</button>
           ))}
@@ -990,6 +1084,7 @@ function CleanAnalyticsPage({ users, listings, exchanges }) {
 }
 
 function AdminPage({ user, listings, exchanges, users, onRefresh, onNavigate }) {
+  const mobile = useMediaQuery("(max-width: 760px)");
   const [tab, setTab] = useState("analytics");
   if (!user || user.role !== "admin") return <div style={{ textAlign: "center", padding: "4rem" }}>Access denied. Admin only.</div>;
 
@@ -1018,7 +1113,7 @@ function AdminPage({ user, listings, exchanges, users, onRefresh, onNavigate }) 
   return (
     <div style={{ maxWidth: 1000, margin: "2rem auto", padding: "0 1rem" }}>
       <h1 style={{ fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif", marginBottom: "1.5rem" }}>Admin dashboard</h1>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: mobile ? "repeat(2,1fr)" : "repeat(4,1fr)", gap: 10, marginBottom: 20 }}>
         {stats.map(s => (
           <div key={s.l} style={{ background: "#f9fafb", borderRadius: 8, padding: "1rem", textAlign: "center" }}>
             <p style={{ margin: "0 0 4px", fontSize: 12, color: "#6b7280" }}>{s.l}</p>
@@ -1026,7 +1121,7 @@ function AdminPage({ user, listings, exchanges, users, onRefresh, onNavigate }) 
           </div>
         ))}
       </div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", overflowX: mobile ? "auto" : "visible", paddingBottom: mobile ? 4 : 0 }}>
         <TabBtn id="analytics" l="📊 Analytics" />
         <TabBtn id="users"     l="👥 Users" />
         <TabBtn id="listings"  l="📦 Listings" />
@@ -1100,28 +1195,31 @@ function AdminPage({ user, listings, exchanges, users, onRefresh, onNavigate }) 
 
 // ── Navbar ────────────────────────────────────────────────────────────────────
 
-function Navbar({ user, page, onNavigate, onLogout, listings = [], exchanges = [] }) {
+function Navbar({ user, page, onNavigate, onLogout, listings = [], exchanges = [], notifications = [] }) {
+  const mobile = useMediaQuery("(max-width: 760px)");
   const unreadListings = user ? exchanges.filter(e => {
     const listing = listings.find(l => l.id === e.listingId);
     return listing?.userId === user.id && e.seenByOwner === false;
   }).length : 0;
   const unreadOffers = user ? exchanges.filter(e => e.offererId === user.id && e.status !== "pending" && e.statusSeenByOfferer === false).length : 0;
+  const unreadNotifications = user ? notifications.filter(n => !n.read).length : 0;
   const navItems = [
     { id: "browse", l: "Browse" },
     ...(user ? [
       { id: "post", l: "Post item" },
       { id: "my-listings", l: "My listings", dot: unreadListings > 0 },
       { id: "my-exchanges", l: "Exchanges", dot: unreadOffers > 0 },
+      { id: "notifications", l: "Notifications", dot: unreadNotifications > 0 },
       ...(user.role === "admin" ? [{ id: "admin", l: "Admin ★" }] : []),
     ] : []),
   ];
   return (
-    <nav style={{ background: "#fff", borderBottom: "0.5px solid #f3f4f6", padding: "0 1.25rem", display: "flex", alignItems: "center", justifyContent: "space-between", height: 52, position: "sticky", top: 0, zIndex: 100 }}>
-      <button onClick={() => onNavigate("home")} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+    <nav style={{ background: "#fff", borderBottom: "0.5px solid #f3f4f6", padding: mobile ? "8px 0.75rem" : "0 1.25rem", display: "flex", alignItems: mobile ? "stretch" : "center", justifyContent: "space-between", gap: mobile ? 8 : 0, minHeight: 52, height: mobile ? "auto" : 52, position: "sticky", top: 0, zIndex: 100, flexDirection: mobile ? "column" : "row" }}>
+      <button onClick={() => onNavigate("home")} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, padding: "4px 0", justifyContent: mobile ? "center" : "flex-start" }}>
         <span style={{ fontSize: 20 }}>⚖️</span>
         <span style={{ fontSize: 16, fontWeight: 500, fontFamily: "Georgia, serif", color: "#d97706" }}>BarterHub</span>
       </button>
-      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: mobile ? "nowrap" : "wrap", overflowX: mobile ? "auto" : "visible", paddingBottom: mobile ? 2 : 0 }}>
         {navItems.map(n => (
           <button key={n.id} onClick={() => { trackCTA(`nav_${n.id}`, page, user?.id); onNavigate(n.id); }}
             style={{ padding: "6px 10px", background: page === n.id ? "#f9fafb" : "none", border: "none", cursor: "pointer", fontSize: 13, borderRadius: 8, color: n.id === "admin" ? "#d97706" : "#111827", fontWeight: n.id === "admin" ? 500 : 400 }}>
@@ -1129,12 +1227,12 @@ function Navbar({ user, page, onNavigate, onLogout, listings = [], exchanges = [
           </button>
         ))}
         {user
-          ? <button onClick={() => onNavigate("profile")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: "none", border: "0.5px solid #e5e7eb", borderRadius: 20, cursor: "pointer", fontSize: 13, marginLeft: 4 }}>
+          ? <button onClick={() => onNavigate("profile")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: "none", border: "0.5px solid #e5e7eb", borderRadius: 20, cursor: "pointer", fontSize: 13, marginLeft: 4, flexShrink: 0 }}>
               <span style={{ width: 22, height: 22, borderRadius: "50%", background: "#d97706", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 500, flexShrink: 0 }}>{user.username[0].toUpperCase()}</span>
               <span>{user.username}</span>
               <span style={{ color: "#9ca3af", fontSize: 11 }}>#{userNumber(user)}</span>
             </button>
-          : <div style={{ display: "flex", gap: 6, marginLeft: 4 }}>
+          : <div style={{ display: "flex", gap: 6, marginLeft: 4, flexShrink: 0 }}>
               <button onClick={() => { trackCTA("nav_sign_in", page); onNavigate("login"); }} style={{ padding: "6px 14px", background: "none", border: "0.5px solid #e5e7eb", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>Sign in</button>
               <button onClick={() => { trackCTA("nav_register", page); onNavigate("register"); }} style={{ padding: "6px 14px", background: "#d97706", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>Register</button>
             </div>}
@@ -1152,13 +1250,45 @@ export default function App() {
   const [listings, setListings] = useState([]);
   const [exchanges, setExchanges] = useState([]);
   const [users, setUsers] = useState([]);
+  const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  async function loadAll() {
+  async function loadAll(activeUserId = user?.id) {
     await userDb.ensureUserNumbers();
-    const [u, l, e] = await Promise.all([userDb.getAll(), listingDb.getAll(), exchangeDb.getAll()]);
-    setUsers(u); setListings(l); setExchanges(e);
-    return { users: u, listings: l, exchanges: e };
+    const [u, l, e, n] = await Promise.all([
+      userDb.getAll(),
+      listingDb.getAll(),
+      exchangeDb.getAll(),
+      activeUserId ? notificationDb.getForUser(activeUserId) : Promise.resolve([]),
+    ]);
+    setUsers(u); setListings(l); setExchanges(e); setNotifications(n);
+    return { users: u, listings: l, exchanges: e, notifications: n };
+  }
+
+  async function refreshNotifications(activeUserId = user?.id) {
+    if (!activeUserId) { setNotifications([]); return []; }
+    const n = await notificationDb.getForUser(activeUserId);
+    setNotifications(n);
+    return n;
+  }
+
+  async function handleToggleLike(listing) {
+    if (!user) { navigate("login"); return; }
+    if (listing.userId === user.id) return;
+    const result = await listingDb.toggleLike(listing.id, user.id);
+    if (result?.liked) {
+      const nextInterests = { ...(user.interests || {}), [listing.category]: (user.interests?.[listing.category] || 0) + 1 };
+      await userDb.update(user.id, { interests: nextInterests });
+      setUser({ ...user, interests: nextInterests });
+      trackEvent({ type: "listing_liked", label: listing.title, page, userId: user.id, extra: { userNumber: user.userNumber, listingId: listing.id, listingTitle: listing.title, category: listing.category } });
+    }
+    await loadAll(user.id);
+  }
+
+  async function markNotificationsRead() {
+    if (!user) return;
+    await notificationDb.markAllRead(user.id);
+    await refreshNotifications(user.id);
   }
 
   useEffect(() => {
@@ -1170,7 +1300,7 @@ export default function App() {
     const me = await auth.me();
     console.log("3. auth.me done", me);
     setUser(me);
-    const fresh = await loadAll();
+    const fresh = await loadAll(me?.id);
     if (me) setUser(fresh.users.find(u => u.id === me.id) || me);
     console.log("4. loadAll done");
   } catch(e) {
@@ -1193,11 +1323,11 @@ export default function App() {
   function navigate(p, param = null) { setPage(p); setPageParam(param); }
 
   async function handleLogin(u) {
-    const fresh = await loadAll();
+    const fresh = await loadAll(u.id);
     setUser(fresh.users.find(x => x.id === u.id) || u);
     navigate("home");
   }
-  async function handleLogout() { await auth.logout(); setUser(null); navigate("home"); }
+  async function handleLogout() { await auth.logout(); setUser(null); setNotifications([]); navigate("home"); }
 
   if (loading) return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -1208,15 +1338,16 @@ export default function App() {
   return (
     <div style={{ minHeight: "100vh", background: "#f3f4f6" }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      <Navbar user={user} page={page} onNavigate={navigate} onLogout={handleLogout} listings={listings} exchanges={exchanges} />
+      <Navbar user={user} page={page} onNavigate={navigate} onLogout={handleLogout} listings={listings} exchanges={exchanges} notifications={notifications} />
       <main>
-        {page === "home"         && <HomePage onNavigate={navigate} listings={listings} users={users} currentUser={user} />}
-        {page === "browse"       && <BrowsePage listings={listings} users={users} onNavigate={navigate} currentUser={user} />}
-        {page === "post"         && <PostItemPage user={user} onPosted={loadAll} onNavigate={navigate} />}
+        {page === "home"         && <HomePage onNavigate={navigate} listings={listings} users={users} currentUser={user} onToggleLike={handleToggleLike} />}
+        {page === "browse"       && <BrowsePage listings={listings} users={users} onNavigate={navigate} currentUser={user} onToggleLike={handleToggleLike} />}
+        {page === "post"         && <PostItemPage user={user} users={users} onPosted={() => loadAll(user?.id)} onNavigate={navigate} />}
         {page === "item"         && <ItemDetailPage listingId={pageParam} listings={listings} users={users} exchanges={exchanges} user={user} onNavigate={navigate} onRefresh={loadAll} />}
         {page === "my-listings"  && <MyListingsPage user={user} listings={listings} exchanges={exchanges} onNavigate={navigate} onRefresh={loadAll} />}
         {page === "my-exchanges" && <MyExchangesPage user={user} listings={listings} exchanges={exchanges} users={users} onNavigate={navigate} />}
         {page === "profile"      && <ProfilePage user={user} onLogout={handleLogout} />}
+        {page === "notifications" && <NotificationsPage user={user} notifications={notifications} onNavigate={navigate} onMarkAllRead={markNotificationsRead} />}
         {page === "admin"        && <AdminPage user={user} listings={listings} exchanges={exchanges} users={users} onRefresh={loadAll} onNavigate={navigate} />}
         {page === "login"        && <LoginPage onLogin={handleLogin} onNavigate={navigate} />}
         {page === "register"     && <RegisterPage onLogin={handleLogin} onNavigate={navigate} />}

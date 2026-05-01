@@ -186,6 +186,23 @@ export const exchangeDb = {
     }
   },
 
+  async toggleLike(id, userId) {
+    try {
+      const ref = doc(db, "listings", id);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return null;
+      const listing = { id: snap.id, ...snap.data() };
+      const likedBy = Array.isArray(listing.likedBy) ? listing.likedBy : [];
+      const liked = likedBy.includes(userId);
+      const nextLikedBy = liked ? likedBy.filter(x => x !== userId) : [...likedBy, userId];
+      await updateDoc(ref, { likedBy: nextLikedBy, likeCount: nextLikedBy.length });
+      return { liked: !liked, likeCount: nextLikedBy.length, listing };
+    } catch (e) {
+      console.error("listingDb.toggleLike failed:", e);
+      throw e;
+    }
+  },
+
   async markListingSeen(listingId, ownerId) {
     try {
       const q = query(col("exchanges"), where("listingId", "==", listingId));
@@ -234,6 +251,19 @@ export const notificationDb = {
     }
   },
 
+  async getForUser(userId) {
+    try {
+      if (!userId) return [];
+      const q = query(col("notifications"), where("userId", "==", userId), limit(200));
+      const snap = await getDocs(q);
+      const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    } catch (e) {
+      console.error("notificationDb.getForUser failed:", e);
+      return [];
+    }
+  },
+
   async create(data) {
     try {
       const ref = await addDoc(col("notifications"), {
@@ -253,6 +283,16 @@ export const notificationDb = {
       await updateDoc(doc(db, "notifications", id), { read: true, readAt: new Date().toISOString() });
     } catch (e) {
       console.error("notificationDb.markRead failed:", e);
+    }
+  },
+
+  async markAllRead(userId) {
+    try {
+      const q = query(col("notifications"), where("userId", "==", userId));
+      const snap = await getDocs(q);
+      await Promise.all(snap.docs.map(d => updateDoc(d.ref, { read: true, readAt: new Date().toISOString() })));
+    } catch (e) {
+      console.error("notificationDb.markAllRead failed:", e);
     }
   },
 
