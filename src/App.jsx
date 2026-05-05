@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { auth } from "./auth";
-import { userDb, listingDb, exchangeDb, analyticsDb, notificationDb } from "./database";
+import { userDb, listingDb, exchangeDb, analyticsDb, notificationDb, commentDb } from "./database";
 import { trackPageView, trackCTA, trackEvent } from "./analytics";
 
 const CATEGORIES = ["Electronics","Clothing","Books","Tools","Furniture","Food","Art","Sports","Vehicles","Other"];
+const POST_PAGE_SIZE = 8;
 
 function timeAgo(iso) {
   if (!iso) return "";
@@ -24,11 +25,18 @@ function RedDot({ show }) {
 function interestScore(listing, user) {
   if (!user) return listing.likeCount || listing.likedBy?.length || 0;
   const interests = user.interests || {};
-  return (interests[listing.category] || 0) * 10 + (listing.likeCount || listing.likedBy?.length || 0);
+  const followsOwner = Array.isArray(user.following) && user.following.includes(listing.userId);
+  return (followsOwner ? 40 : 0) + (interests[listing.category] || 0) * 10 + (listing.likeCount || listing.likedBy?.length || 0);
 }
 
 function sortByInterest(listings, user) {
   return [...listings].sort((a, b) => interestScore(b, user) - interestScore(a, user) || new Date(b.createdAt) - new Date(a.createdAt));
+}
+
+function loadMoreOnScroll(e, hasMore, onLoadMore) {
+  if (!hasMore) return;
+  const el = e.currentTarget;
+  if (el.scrollHeight - el.scrollTop - el.clientHeight < 160) onLoadMore();
 }
 
 function useMediaQuery(query) {
@@ -89,9 +97,11 @@ function Alert({ type, msg, onClose }) {
   );
 }
 
-function ListingCard({ listing, users, onClick, page, currentUser, onToggleLike }) {
+function ListingCard({ listing, users, comments = [], onClick, onOpenComments, page, currentUser, onToggleLike, onToggleFollow }) {
   const owner = users.find(u => u.id === listing.userId);
   const liked = currentUser && Array.isArray(listing.likedBy) && listing.likedBy.includes(currentUser.id);
+  const followsOwner = currentUser && Array.isArray(currentUser.following) && currentUser.following.includes(listing.userId);
+  const commentCount = comments.filter(c => c.listingId === listing.id && c.active !== false).length;
   return (
     <div
       onClick={() => { trackCTA(`listing_card_${listing.title}`, page, currentUser?.id); onClick(listing); }}
@@ -111,6 +121,7 @@ function ListingCard({ listing, users, onClick, page, currentUser, onToggleLike 
             <button
               onClick={e => { e.stopPropagation(); onToggleLike?.(listing); }}
               title={liked ? "Unlike" : "Like"}
+              className={liked ? "like-pop" : ""}
               style={{ border: "none", background: liked ? "#fee2e2" : "#f9fafb", color: liked ? "#dc2626" : "#6b7280", borderRadius: 999, padding: "3px 8px", fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
             >
               {liked ? "♥" : "♡"} {listing.likeCount || listing.likedBy?.length || 0}
@@ -123,7 +134,18 @@ function ListingCard({ listing, users, onClick, page, currentUser, onToggleLike 
           <span style={{ fontSize: 11, color: "#9ca3af" }}>{owner?.username || "Unknown"} · {timeAgo(listing.createdAt)}</span>
           <span style={{ fontSize: 11, background: "#f9fafb", padding: "2px 8px", borderRadius: 20, color: "#6b7280" }}>{listing.category}</span>
         </div>
+        {currentUser && owner && owner.id !== currentUser.id && (
+          <button onClick={e => { e.stopPropagation(); onToggleFollow?.(owner); }} style={{ border: "none", background: followsOwner ? "#111827" : "#eef2ff", color: followsOwner ? "#fff" : "#3730a3", borderRadius: 999, padding: "3px 8px", fontSize: 11, marginBottom: 8 }}>
+            {followsOwner ? "Following" : `Follow #${userNumber(owner)}`}
+          </button>
+        )}
         <div style={{ fontSize: 12, color: "#d97706", fontStyle: "italic", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>Wants: {listing.wantInReturn}</div>
+        <div style={{ marginTop: 8, display: "flex", gap: 12, color: "#6b7280", fontSize: 12 }}>
+          <button onClick={e => { e.stopPropagation(); onOpenComments?.(listing); }} style={{ border: "none", background: "none", padding: 0, color: "#0079d3", fontSize: 12 }}>
+            {commentCount} comment{commentCount !== 1 ? "s" : ""}
+          </button>
+          <span>{listing.likeCount || listing.likedBy?.length || 0} like{(listing.likeCount || listing.likedBy?.length || 0) !== 1 ? "s" : ""}</span>
+        </div>
       </div>
     </div>
   );
@@ -146,7 +168,7 @@ function LoginPage({ onLogin, onNavigate }) {
       <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "2rem" }}>
         <div style={{ textAlign: "center", marginBottom: "1.5rem" }}>
           <span style={{ fontSize: 32 }}>⚖️</span>
-          <h2 style={{ margin: "8px 0 0", fontSize: 22, fontWeight: 500, fontFamily: "Georgia, serif" }}>Sign in to BarterHub</h2>
+          <h2 style={{ margin: "8px 0 0", fontSize: 22, fontWeight: 700 }}>Sign in to SwapCircle</h2>
         </div>
         <Alert type="error" msg={err} onClose={() => setErr("")} />
         <form onSubmit={handle}>
@@ -203,7 +225,7 @@ function RegisterPage({ onLogin, onNavigate }) {
       <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "2rem" }}>
         <div style={{ textAlign: "center", marginBottom: "1.5rem" }}>
           <span style={{ fontSize: 32 }}>⚖️</span>
-          <h2 style={{ margin: "8px 0 0", fontSize: 22, fontWeight: 500, fontFamily: "Georgia, serif" }}>Join BarterHub</h2>
+          <h2 style={{ margin: "8px 0 0", fontSize: 22, fontWeight: 700 }}>Join SwapCircle</h2>
         </div>
         <Alert type="error" msg={err} onClose={() => setErr("")} />
         <form onSubmit={handle}>
@@ -229,15 +251,15 @@ function RegisterPage({ onLogin, onNavigate }) {
   );
 }
 
-function HomePage({ onNavigate, listings, users, currentUser, onToggleLike }) {
+function HomePage({ onNavigate, listings, users, comments, currentUser, onToggleLike, onToggleFollow }) {
   const mobile = useMediaQuery("(max-width: 640px)");
   const featured = sortByInterest(listings.filter(l => l.status === "available" && l.userId !== currentUser?.id), currentUser).slice(0, 6);
   return (
     <div>
-      <div style={{ background: "linear-gradient(135deg,#78350f 0%,#d97706 100%)", padding: mobile ? "2.5rem 1rem" : "4rem 2rem", textAlign: "center", color: "white" }}>
+      <div style={{ background: "linear-gradient(135deg,#ff4500 0%,#0079d3 100%)", padding: mobile ? "2.5rem 1rem" : "4rem 2rem", textAlign: "center", color: "white" }}>
         <div style={{ fontSize: 40, marginBottom: 16 }}>⚖️</div>
-        <h1 style={{ margin: "0 0 1rem", fontSize: mobile ? 26 : 34, fontWeight: 500, fontFamily: "Georgia, serif", lineHeight: 1.25 }}>Trade What You Have.<br />Get What You Need.</h1>
-        <p style={{ margin: "0 0 2rem", fontSize: 15, opacity: 0.9, maxWidth: 480, marginLeft: "auto", marginRight: "auto" }}>A community marketplace for bartering goods — no money needed.</p>
+        <h1 style={{ margin: "0 0 1rem", fontSize: mobile ? 28 : 38, fontWeight: 800, lineHeight: 1.15 }}>SwapCircle</h1>
+        <p style={{ margin: "0 0 2rem", fontSize: 15, opacity: 0.95, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>A community feed for swaps, offers, likes, follows, and item discussions.</p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
           <button onClick={() => { trackCTA("hero_browse_listings", "home", currentUser?.id); onNavigate("browse"); }}
             style={{ padding: "11px 28px", background: "white", color: "#92400e", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 15, fontWeight: 500 }}>
@@ -277,8 +299,8 @@ function HomePage({ onNavigate, listings, users, currentUser, onToggleLike }) {
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
             {featured.map(l => (
-              <ListingCard key={l.id} listing={l} users={users} page="home" currentUser={currentUser}
-                onClick={() => onNavigate("item", l.id)} onToggleLike={onToggleLike} />
+              <ListingCard key={l.id} listing={l} users={users} comments={comments} page="home" currentUser={currentUser}
+                onClick={() => onNavigate("item", l.id)} onOpenComments={() => onNavigate("discussion", l.id)} onToggleLike={onToggleLike} onToggleFollow={onToggleFollow} />
             ))}
           </div>
         </div>
@@ -287,16 +309,45 @@ function HomePage({ onNavigate, listings, users, currentUser, onToggleLike }) {
   );
 }
 
-function BrowsePage({ listings, users, onNavigate, currentUser, onToggleLike }) {
+function BrowsePage({ listings, users, comments, onNavigate, currentUser, onToggleLike, onToggleFollow }) {
   const mobile = useMediaQuery("(max-width: 640px)");
-  const [search, setSearch] = useState(""), [cat, setCat] = useState(""), [status, setStatus] = useState("available");
+  const [search, setSearch] = useState(""), [cat, setCat] = useState(""), [status, setStatus] = useState(""), [feed, setFeed] = useState("all");
+  const [visibleCount, setVisibleCount] = useState(POST_PAGE_SIZE);
   const filtered = sortByInterest(listings.filter(l => {
     const ms = !search || l.title.toLowerCase().includes(search.toLowerCase()) || l.description.toLowerCase().includes(search.toLowerCase());
-    return ms && (!cat || l.category === cat) && (!status || l.status === status);
+    const follows = feed !== "following" || (currentUser?.following || []).includes(l.userId);
+    return ms && follows && (!cat || l.category === cat) && (!status || l.status === status);
   }), currentUser);
+  const visibleListings = filtered.slice(0, visibleCount);
+  const hasMoreListings = visibleCount < filtered.length;
+  useEffect(() => {
+    setVisibleCount(POST_PAGE_SIZE);
+  }, [search, cat, status, feed, currentUser?.id, listings.length]);
+  if (!currentUser) {
+    return (
+      <div style={{ maxWidth: 620, margin: "4rem auto", padding: "0 1rem", textAlign: "center" }}>
+        <div style={{ background: "#fff", border: "0.5px solid #cfd6dc", borderRadius: 8, padding: mobile ? "2rem 1rem" : "2.5rem" }}>
+          <div style={{ width: 54, height: 54, borderRadius: "50%", background: "#ff4500", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 20, marginBottom: 14 }}>SC</div>
+          <h1 style={{ margin: "0 0 10px", fontSize: 26, fontWeight: 700 }}>Join SwapCircle</h1>
+          <p style={{ margin: "0 auto 22px", color: "#6b7280", maxWidth: 430 }}>Sign in to see community posts, like items, follow users, and join discussions.</p>
+          <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+            <button onClick={() => onNavigate("login")} style={{ padding: "10px 18px", border: "none", borderRadius: 999, background: "#ff4500", color: "#fff", fontWeight: 700 }}>Sign in</button>
+            <button onClick={() => onNavigate("register")} style={{ padding: "10px 18px", border: "0.5px solid #0079d3", borderRadius: 999, background: "#fff", color: "#0079d3", fontWeight: 700 }}>Create account</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div style={{ maxWidth: 1000, margin: "0 auto", padding: "2rem 1rem" }}>
       <h1 style={{ margin: "0 0 1.5rem", fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif" }}>Browse listings</h1>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        {["all", "following"].map(mode => (
+          <button key={mode} onClick={() => setFeed(mode)} style={{ padding: "7px 12px", border: "0.5px solid #e5e7eb", borderRadius: 999, background: feed === mode ? "#ff4500" : "#fff", color: feed === mode ? "#fff" : "#374151", fontSize: 13 }}>
+            {mode === "all" ? "All posts" : "Following"}
+          </button>
+        ))}
+      </div>
       <div style={{ display: "flex", gap: 10, marginBottom: "1.5rem", flexWrap: "wrap" }}>
         <input value={search} onChange={e => { setSearch(e.target.value); trackCTA("search_input", "browse", currentUser?.id); }} placeholder="Search items…" style={{ flex: 1, minWidth: 180 }} />
         <select value={cat} onChange={e => { setCat(e.target.value); trackCTA(`filter_category_${e.target.value}`, "browse", currentUser?.id); }} style={{ minWidth: 140 }}>
@@ -313,9 +364,17 @@ function BrowsePage({ listings, users, onNavigate, currentUser, onToggleLike }) 
       <p style={{ margin: "0 0 1rem", fontSize: 13, color: "#6b7280" }}>{filtered.length} listing{filtered.length !== 1 ? "s" : ""} found</p>
       {filtered.length === 0
         ? <div style={{ textAlign: "center", padding: "4rem 0", color: "#6b7280" }}>No listings found.</div>
-        : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
-            {filtered.map(l => <ListingCard key={l.id} listing={l} users={users} page="browse" currentUser={currentUser} onClick={() => onNavigate("item", l.id)} onToggleLike={onToggleLike} />)}
-          </div>}
+        : (
+          <>
+            <div onScroll={e => loadMoreOnScroll(e, hasMoreListings, () => setVisibleCount(c => Math.min(c + POST_PAGE_SIZE, filtered.length)))} style={{ maxHeight: "74vh", overflowY: "auto", paddingRight: 2 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
+                {visibleListings.map(l => <ListingCard key={l.id} listing={l} users={users} comments={comments} page="browse" currentUser={currentUser} onClick={() => onNavigate("item", l.id)} onOpenComments={() => onNavigate("discussion", l.id)} onToggleLike={onToggleLike} onToggleFollow={onToggleFollow} />)}
+              </div>
+              {hasMoreListings && <div style={{ textAlign: "center", padding: "16px 0 4px", color: "#6b7280", fontSize: 12 }}>Scroll for more posts</div>}
+            </div>
+            <p style={{ margin: "10px 0 0", color: "#9ca3af", fontSize: 12 }}>Showing {visibleListings.length} of {filtered.length} posts</p>
+          </>
+        )}
     </div>
   );
 }
@@ -408,11 +467,14 @@ function PostItemPage({ user, users, onPosted, onNavigate }) {
   );
 }
 
-function ItemDetailPage({ listingId, listings, users, exchanges, user, onNavigate, onRefresh }) {
+function ItemDetailPage({ listingId, listings, users, exchanges, comments, user, onNavigate, onRefresh, onToggleLike, onToggleFollow }) {
   const mobile = useMediaQuery("(max-width: 760px)");
   const listing = listings.find(l => l.id === listingId);
   const [offerForm, setOfferForm] = useState({ title: "", description: "" });
   const [offerImage, setOfferImage] = useState(null);
+  const [commentText, setCommentText] = useState("");
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [replyText, setReplyText] = useState("");
   const [err, setErr] = useState(""), [success, setSuccess] = useState(""), [loading, setLoading] = useState(false), [showOffer, setShowOffer] = useState(false);
   const fileRef = useRef();
 
@@ -427,6 +489,11 @@ function ItemDetailPage({ listingId, listings, users, exchanges, user, onNavigat
   const isOwner = user && user.id === listing.userId;
   const itemExchanges = exchanges.filter(e => e.listingId === listing.id);
   const myOffer = user && itemExchanges.find(e => e.offererId === user.id);
+  const liked = user && Array.isArray(listing.likedBy) && listing.likedBy.includes(user.id);
+  const followsOwner = user && Array.isArray(user.following) && user.following.includes(listing.userId);
+  const itemComments = comments.filter(c => c.listingId === listing.id && c.active !== false);
+  const topComments = itemComments.filter(c => !c.parentId);
+  const repliesFor = (commentId) => itemComments.filter(c => c.parentId === commentId);
 
   async function handleOfferImage(e) {
     const file = e.target.files[0]; if (!file) return;
@@ -506,6 +573,42 @@ function ItemDetailPage({ listingId, listings, users, exchanges, user, onNavigat
     onRefresh();
   }
 
+  async function submitComment(e, parentId = null) {
+    e.preventDefault();
+    if (!user) { onNavigate("login"); return; }
+    const text = (parentId ? replyText : commentText).trim();
+    if (!text) return;
+    const comment = await commentDb.create({
+      listingId: listing.id,
+      parentId,
+      userId: user.id,
+      userNumber: user.userNumber || null,
+      username: user.username,
+      text,
+    });
+    const notifyUserIds = new Set([listing.userId]);
+    if (parentId) {
+      const parent = itemComments.find(c => c.id === parentId);
+      if (parent?.userId) notifyUserIds.add(parent.userId);
+    }
+    notifyUserIds.delete(user.id);
+    await Promise.all([...notifyUserIds].map(targetId => notificationDb.create({
+      userId: targetId,
+      actorId: user.id,
+      actorNumber: user.userNumber || null,
+      type: parentId ? "reply_added" : "comment_added",
+      title: parentId ? "New reply" : "New comment",
+      message: `${user.username} ${parentId ? "replied on" : "commented on"} ${listing.title}`,
+      listingId: listing.id,
+      commentId: comment.id,
+    })));
+    trackEvent({ type: parentId ? "reply_added" : "comment_added", label: listing.title, page: "item", userId: user.id, extra: { userNumber: user.userNumber, listingId: listing.id, commentId: comment.id } });
+    setCommentText("");
+    setReplyText("");
+    setReplyingTo(null);
+    onRefresh(user.id);
+  }
+
   useEffect(() => {
     if (isOwner && itemExchanges.some(e => e.seenByOwner === false)) {
       exchangeDb.markListingSeen(listing.id, user.id);
@@ -536,10 +639,22 @@ function ItemDetailPage({ listingId, listings, users, exchanges, user, onNavigat
             <Badge status={listing.status} />
           </div>
           <p style={{ fontSize: 13, color: "#6b7280", marginBottom: 12 }}>{listing.category} · by <strong>{owner?.username || "Unknown"}</strong> <span style={{ color: "#9ca3af" }}>#{userNumber(owner)}</span> · {timeAgo(listing.createdAt)}</p>
+          {user && owner && owner.id !== user.id && (
+            <button onClick={() => onToggleFollow?.(owner)} style={{ marginBottom: 12, padding: "7px 12px", background: followsOwner ? "#111827" : "#eef2ff", color: followsOwner ? "#fff" : "#3730a3", border: "none", borderRadius: 999, fontSize: 13 }}>
+              {followsOwner ? "Following" : `Follow ${owner.username}`}
+            </button>
+          )}
           <p style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 16 }}>{listing.description}</p>
           <div style={{ background: "#fffbeb", border: "0.5px solid #fbbf24", borderRadius: 8, padding: "10px 12px", marginBottom: 16 }}>
             <p style={{ margin: 0, fontSize: 13, color: "#92400e" }}><strong>Looking for:</strong> {listing.wantInReturn}</p>
           </div>
+          <button
+            onClick={() => onToggleLike?.(listing)}
+            className={liked ? "like-pop" : ""}
+            style={{ marginBottom: 16, padding: "9px 14px", background: liked ? "#fee2e2" : "#fff", color: liked ? "#dc2626" : "#374151", border: "0.5px solid #e5e7eb", borderRadius: 999, cursor: "pointer", fontSize: 14, fontWeight: 500 }}
+          >
+            {liked ? "♥ Liked" : "♡ Like"} · {listing.likeCount || listing.likedBy?.length || 0}
+          </button>
 
           {isOwner ? (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -628,6 +743,156 @@ function ItemDetailPage({ listingId, listings, users, exchanges, user, onNavigat
           })}
         </div>
       )}
+
+      <div style={{ marginTop: 24, background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: mobile ? "1rem" : "1.25rem" }}>
+        <h3 style={{ fontSize: 16, fontWeight: 500, margin: "0 0 12px" }}>Comments ({topComments.length})</h3>
+        <form onSubmit={submitComment} style={{ display: "flex", gap: 8, marginBottom: 16, flexDirection: mobile ? "column" : "row" }}>
+          <input value={commentText} onChange={e => setCommentText(e.target.value)} placeholder={user ? "Add a comment" : "Sign in to comment"} disabled={!user} style={{ flex: 1 }} />
+          <button type="submit" disabled={!user || !commentText.trim()} style={{ padding: "9px 14px", border: "none", borderRadius: 8, background: "#d97706", color: "#fff", opacity: !user || !commentText.trim() ? 0.6 : 1 }}>Post</button>
+        </form>
+        {topComments.length === 0 ? (
+          <p style={{ margin: 0, color: "#9ca3af", fontSize: 13 }}>No comments yet.</p>
+        ) : topComments.map(c => {
+          const author = users.find(u => u.id === c.userId);
+          const replies = repliesFor(c.id);
+          return (
+            <div key={c.id} style={{ borderTop: "0.5px solid #f3f4f6", paddingTop: 12, marginTop: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <strong style={{ fontSize: 13 }}>{author?.username || c.username || "User"} <span style={{ color: "#9ca3af", fontWeight: 400 }}>#{c.userNumber || userNumber(author)}</span></strong>
+                <span style={{ fontSize: 11, color: "#9ca3af" }}>{timeAgo(c.createdAt)}</span>
+              </div>
+              <p style={{ margin: "6px 0 8px", fontSize: 14, color: "#374151", lineHeight: 1.5 }}>{c.text}</p>
+              {user && <button onClick={() => setReplyingTo(replyingTo === c.id ? null : c.id)} style={{ border: "none", background: "none", color: "#d97706", padding: 0, fontSize: 12 }}>Reply</button>}
+              {replyingTo === c.id && (
+                <form onSubmit={e => submitComment(e, c.id)} style={{ display: "flex", gap: 8, marginTop: 8, flexDirection: mobile ? "column" : "row" }}>
+                  <input value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write a reply" style={{ flex: 1 }} />
+                  <button type="submit" disabled={!replyText.trim()} style={{ padding: "8px 12px", border: "none", borderRadius: 8, background: "#111827", color: "#fff", opacity: !replyText.trim() ? 0.6 : 1 }}>Reply</button>
+                </form>
+              )}
+              {replies.length > 0 && (
+                <div style={{ marginTop: 10, marginLeft: mobile ? 12 : 24, paddingLeft: 12, borderLeft: "2px solid #f3f4f6" }}>
+                  {replies.map(r => {
+                    const replyAuthor = users.find(u => u.id === r.userId);
+                    return (
+                      <div key={r.id} style={{ marginBottom: 10 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                          <strong style={{ fontSize: 12 }}>{replyAuthor?.username || r.username || "User"} <span style={{ color: "#9ca3af", fontWeight: 400 }}>#{r.userNumber || userNumber(replyAuthor)}</span></strong>
+                          <span style={{ fontSize: 11, color: "#9ca3af" }}>{timeAgo(r.createdAt)}</span>
+                        </div>
+                        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#374151" }}>{r.text}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DiscussionPage({ listingId, listings, users, comments, user, onNavigate, onRefresh }) {
+  const mobile = useMediaQuery("(max-width: 760px)");
+  const listing = listings.find(l => l.id === listingId);
+  const [commentText, setCommentText] = useState("");
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [replyText, setReplyText] = useState("");
+
+  if (!listing) return (
+    <div style={{ textAlign: "center", padding: "4rem" }}>
+      <p>Discussion not found.</p>
+      <button onClick={() => onNavigate("browse")} style={{ color: "#0079d3", background: "none", border: "none", cursor: "pointer" }}>Back to feed</button>
+    </div>
+  );
+
+  const itemComments = comments.filter(c => c.listingId === listing.id && c.active !== false);
+  const topComments = itemComments.filter(c => !c.parentId);
+  const repliesFor = (commentId) => itemComments.filter(c => c.parentId === commentId);
+
+  async function submitComment(e, parentId = null) {
+    e.preventDefault();
+    if (!user) { onNavigate("login"); return; }
+    const text = (parentId ? replyText : commentText).trim();
+    if (!text) return;
+    const comment = await commentDb.create({
+      listingId: listing.id,
+      parentId,
+      userId: user.id,
+      userNumber: user.userNumber || null,
+      username: user.username,
+      text,
+    });
+    const notifyUserIds = new Set([listing.userId]);
+    if (parentId) {
+      const parent = itemComments.find(c => c.id === parentId);
+      if (parent?.userId) notifyUserIds.add(parent.userId);
+    }
+    notifyUserIds.delete(user.id);
+    await Promise.all([...notifyUserIds].map(targetId => notificationDb.create({
+      userId: targetId,
+      actorId: user.id,
+      actorNumber: user.userNumber || null,
+      type: parentId ? "reply_added" : "comment_added",
+      title: parentId ? "New reply" : "New comment",
+      message: `${user.username} ${parentId ? "replied on" : "commented on"} ${listing.title}`,
+      listingId: listing.id,
+      commentId: comment.id,
+    })));
+    setCommentText("");
+    setReplyText("");
+    setReplyingTo(null);
+    onRefresh(user.id);
+  }
+
+  return (
+    <div style={{ maxWidth: 760, margin: "2rem auto", padding: "0 1rem" }}>
+      <button onClick={() => onNavigate("item", listing.id)} style={{ background: "none", border: "none", color: "#6b7280", cursor: "pointer", marginBottom: 12 }}>Back to item</button>
+      <div style={{ background: "#fff", border: "0.5px solid #cfd6dc", borderRadius: 8, padding: mobile ? "1rem" : "1.25rem" }}>
+        <p style={{ margin: "0 0 6px", color: "#6b7280", fontSize: 12 }}>{listing.category} discussion</p>
+        <h1 style={{ margin: "0 0 16px", fontSize: 22 }}>{listing.title}</h1>
+        <form onSubmit={submitComment} style={{ display: "flex", gap: 8, marginBottom: 16, flexDirection: mobile ? "column" : "row" }}>
+          <input value={commentText} onChange={e => setCommentText(e.target.value)} placeholder={user ? "Add to the discussion" : "Sign in to comment"} disabled={!user} style={{ flex: 1 }} />
+          <button type="submit" disabled={!user || !commentText.trim()} style={{ padding: "9px 14px", border: "none", borderRadius: 999, background: "#ff4500", color: "#fff", opacity: !user || !commentText.trim() ? 0.6 : 1 }}>Comment</button>
+        </form>
+        {topComments.length === 0 ? <p style={{ color: "#9ca3af", fontSize: 13 }}>No comments yet.</p> : topComments.map(c => {
+          const author = users.find(u => u.id === c.userId);
+          const replies = repliesFor(c.id);
+          return (
+            <div key={c.id} style={{ borderTop: "0.5px solid #e5e7eb", paddingTop: 12, marginTop: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <strong style={{ fontSize: 13 }}>{author?.username || c.username || "User"} <span style={{ color: "#9ca3af", fontWeight: 400 }}>#{c.userNumber || userNumber(author)}</span></strong>
+                <span style={{ fontSize: 11, color: "#9ca3af" }}>{timeAgo(c.createdAt)}</span>
+              </div>
+              <p style={{ margin: "6px 0 8px", fontSize: 14, color: "#374151", lineHeight: 1.5 }}>{c.text}</p>
+              {user && <button onClick={() => setReplyingTo(replyingTo === c.id ? null : c.id)} style={{ border: "none", background: "none", color: "#0079d3", padding: 0, fontSize: 12 }}>Reply</button>}
+              {replyingTo === c.id && (
+                <form onSubmit={e => submitComment(e, c.id)} style={{ display: "flex", gap: 8, marginTop: 8, flexDirection: mobile ? "column" : "row" }}>
+                  <input value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write a reply" style={{ flex: 1 }} />
+                  <button type="submit" disabled={!replyText.trim()} style={{ padding: "8px 12px", border: "none", borderRadius: 999, background: "#0079d3", color: "#fff", opacity: !replyText.trim() ? 0.6 : 1 }}>Reply</button>
+                </form>
+              )}
+              {replies.length > 0 && (
+                <div style={{ marginTop: 10, marginLeft: mobile ? 12 : 24, paddingLeft: 12, borderLeft: "2px solid #eef2f7" }}>
+                  {replies.map(r => {
+                    const replyAuthor = users.find(u => u.id === r.userId);
+                    return (
+                      <div key={r.id} style={{ marginBottom: 10 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                          <strong style={{ fontSize: 12 }}>{replyAuthor?.username || r.username || "User"} <span style={{ color: "#9ca3af", fontWeight: 400 }}>#{r.userNumber || userNumber(replyAuthor)}</span></strong>
+                          <span style={{ fontSize: 11, color: "#9ca3af" }}>{timeAgo(r.createdAt)}</span>
+                        </div>
+                        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#374151" }}>{r.text}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -700,10 +965,153 @@ function MyExchangesPage({ user, listings, exchanges, users, onNavigate }) {
   );
 }
 
-function ProfilePage({ user, onLogout }) {
+function SocialStatButton({ label, value, onClick }) {
+  return (
+    <button onClick={onClick} style={{ flex: 1, minWidth: 96, border: "0.5px solid #e5e7eb", background: "#f9fafb", borderRadius: 8, padding: "10px 8px", cursor: "pointer", textAlign: "center" }}>
+      <strong style={{ display: "block", fontSize: 18, color: "#111827" }}>{value}</strong>
+      <span style={{ display: "block", fontSize: 12, color: "#6b7280" }}>{label}</span>
+    </button>
+  );
+}
+
+function UserPostFeed({ posts, users, comments, currentUser, onNavigate, onToggleLike, onToggleFollow }) {
+  const [visibleCount, setVisibleCount] = useState(POST_PAGE_SIZE);
+  const visiblePosts = posts.slice(0, visibleCount);
+  const hasMorePosts = visibleCount < posts.length;
+  useEffect(() => {
+    setVisibleCount(POST_PAGE_SIZE);
+  }, [posts.length, currentUser?.id]);
+  if (posts.length === 0) {
+    return <div style={{ background: "#fff", border: "0.5px solid #e5e7eb", borderRadius: 8, padding: "2.5rem 1rem", textAlign: "center", color: "#6b7280" }}>No posts yet.</div>;
+  }
+  return (
+    <div onScroll={e => loadMoreOnScroll(e, hasMorePosts, () => setVisibleCount(c => Math.min(c + POST_PAGE_SIZE, posts.length)))} style={{ maxHeight: 720, overflowY: "auto", paddingRight: 2 }}>
+      <div style={{ display: "grid", gap: 12 }}>
+        {visiblePosts.map(l => (
+          <ListingCard
+            key={l.id}
+            listing={l}
+            users={users}
+            comments={comments}
+            page="profile"
+            currentUser={currentUser}
+            onClick={() => onNavigate("item", l.id)}
+            onOpenComments={() => onNavigate("discussion", l.id)}
+            onToggleLike={onToggleLike}
+            onToggleFollow={onToggleFollow}
+          />
+        ))}
+      </div>
+      {hasMorePosts && <div style={{ textAlign: "center", padding: "14px 0 4px", color: "#6b7280", fontSize: 12 }}>Scroll for more posts</div>}
+    </div>
+  );
+}
+
+function SocialListPage({ pageParam, users, currentUser, onNavigate, onToggleFollow }) {
+  const mobile = useMediaQuery("(max-width: 640px)");
+  const profileUserId = typeof pageParam === "object" ? pageParam?.userId : currentUser?.id;
+  const type = typeof pageParam === "object" ? pageParam?.type : "followers";
+  const profileUser = users.find(u => u.id === profileUserId);
+  if (!profileUser) return (
+    <div style={{ textAlign: "center", padding: "4rem" }}>
+      <p>User not found.</p>
+      <button onClick={() => onNavigate("browse")} style={{ color: "#0079d3", background: "none", border: "none", cursor: "pointer" }}>Back to feed</button>
+    </div>
+  );
+
+  const followingIds = profileUser.following || [];
+  const list = type === "following"
+    ? followingIds.map(id => users.find(u => u.id === id)).filter(Boolean)
+    : users.filter(u => (u.following || []).includes(profileUser.id));
+  const title = type === "following" ? "Following" : "Followers";
+
+  return (
+    <div style={{ maxWidth: 720, margin: "2rem auto", padding: "0 1rem" }}>
+      <button onClick={() => onNavigate(profileUser.id === currentUser?.id ? "profile" : "user-profile", profileUser.id)} style={{ border: "none", background: "none", color: "#6b7280", cursor: "pointer", marginBottom: 12 }}>Back to profile</button>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>{title} of {profileUser.username}</h1>
+        <span style={{ fontSize: 12, color: "#6b7280" }}>#{userNumber(profileUser)}</span>
+      </div>
+      {list.length === 0 ? (
+        <div style={{ background: "#fff", border: "0.5px solid #e5e7eb", borderRadius: 8, padding: "3rem 1rem", textAlign: "center", color: "#6b7280" }}>No users here yet.</div>
+      ) : (
+        <div style={{ display: "grid", gap: 10, maxHeight: "70vh", overflowY: "auto" }}>
+          {list.map(u => {
+            const isSelf = u.id === currentUser?.id;
+            const follows = currentUser && (currentUser.following || []).includes(u.id);
+            return (
+              <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", border: "0.5px solid #e5e7eb", borderRadius: 8, padding: mobile ? "10px" : "12px 14px" }}>
+                <button onClick={() => onNavigate(isSelf ? "profile" : "user-profile", u.id)} style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0, border: "none", background: "none", cursor: "pointer", textAlign: "left" }}>
+                  <span style={{ width: 38, height: 38, borderRadius: "50%", background: "#ff4500", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 700, flexShrink: 0 }}>{u.username?.[0]?.toUpperCase()}</span>
+                  <span style={{ minWidth: 0 }}>
+                    <strong style={{ display: "block", fontSize: 14 }}>{u.username}</strong>
+                    <span style={{ display: "block", fontSize: 12, color: "#6b7280" }}>User ID #{userNumber(u)}</span>
+                  </span>
+                </button>
+                {!isSelf && currentUser && (
+                  <button onClick={() => onToggleFollow(u)} style={{ border: "none", background: follows ? "#111827" : "#eef2ff", color: follows ? "#fff" : "#3730a3", borderRadius: 999, padding: "7px 12px", fontSize: 12 }}>
+                    {follows ? "Following" : "Follow"}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UserProfilePage({ profileUserId, users, listings, comments, currentUser, onNavigate, onToggleLike, onToggleFollow }) {
+  const profileUser = users.find(u => u.id === profileUserId);
+  if (!profileUser) return (
+    <div style={{ textAlign: "center", padding: "4rem" }}>
+      <p>User not found.</p>
+      <button onClick={() => onNavigate("browse")} style={{ color: "#0079d3", background: "none", border: "none", cursor: "pointer" }}>Back to feed</button>
+    </div>
+  );
+  if (profileUser.id === currentUser?.id) return <ProfilePage user={currentUser} users={users} listings={listings} comments={comments} onNavigate={onNavigate} onToggleLike={onToggleLike} onToggleFollow={onToggleFollow} onLogout={() => {}} />;
+
+  const posts = listings.filter(l => l.userId === profileUser.id).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const followers = users.filter(u => (u.following || []).includes(profileUser.id));
+  const followingCount = (profileUser.following || []).length;
+  const follows = currentUser && (currentUser.following || []).includes(profileUser.id);
+
+  return (
+    <div style={{ maxWidth: 760, margin: "2rem auto", padding: "0 1rem" }}>
+      <button onClick={() => onNavigate("browse")} style={{ border: "none", background: "none", color: "#6b7280", cursor: "pointer", marginBottom: 12 }}>Back to feed</button>
+      <div style={{ background: "#fff", border: "0.5px solid #cfd6dc", borderRadius: 8, padding: "1.25rem", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
+          <div style={{ width: 56, height: 56, borderRadius: "50%", background: "#ff4500", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 800, flexShrink: 0 }}>{profileUser.username?.[0]?.toUpperCase()}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h1 style={{ margin: "0 0 2px", fontSize: 22 }}>{profileUser.username}</h1>
+            <p style={{ margin: 0, color: "#6b7280", fontSize: 13 }}>User ID #{userNumber(profileUser)}</p>
+          </div>
+          {currentUser && (
+            <button onClick={() => onToggleFollow(profileUser)} style={{ border: "none", background: follows ? "#111827" : "#ff4500", color: "#fff", borderRadius: 999, padding: "8px 14px", fontSize: 13 }}>
+              {follows ? "Following" : "Follow"}
+            </button>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <SocialStatButton label="Posts" value={posts.length} onClick={() => {}} />
+          <SocialStatButton label="Followers" value={followers.length} onClick={() => onNavigate("social-list", { userId: profileUser.id, type: "followers" })} />
+          <SocialStatButton label="Following" value={followingCount} onClick={() => onNavigate("social-list", { userId: profileUser.id, type: "following" })} />
+        </div>
+      </div>
+      <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>Posts</h2>
+      <UserPostFeed posts={posts} users={users} comments={comments} currentUser={currentUser} onNavigate={onNavigate} onToggleLike={onToggleLike} onToggleFollow={onToggleFollow} />
+    </div>
+  );
+}
+
+function ProfilePage({ user, users = [], listings = [], comments = [], onNavigate, onToggleLike, onToggleFollow, onLogout }) {
   const [form, setForm] = useState({ oldPw: "", newPw: "", confirm: "" });
   const [err, setErr] = useState(""), [success, setSuccess] = useState(""), [loading, setLoading] = useState(false);
   if (!user) return null;
+  const posts = listings.filter(l => l.userId === user.id).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const followers = users.filter(u => (u.following || []).includes(user.id));
+  const followingCount = (user.following || []).length;
   async function changePw(e) {
     e.preventDefault();
     if (form.newPw !== form.confirm) { setErr("Passwords don't match"); return; }
@@ -713,11 +1121,11 @@ function ProfilePage({ user, onLogout }) {
     catch (e) { setErr(e.message); } finally { setLoading(false); }
   }
   return (
-    <div style={{ maxWidth: 480, margin: "2rem auto", padding: "0 1rem" }}>
+    <div style={{ maxWidth: 760, margin: "2rem auto", padding: "0 1rem" }}>
       <h1 style={{ fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif", marginBottom: "1.5rem" }}>Profile</h1>
-      <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1.5rem", marginBottom: 14 }}>
+      <div style={{ background: "#fff", border: "0.5px solid #cfd6dc", borderRadius: 8, padding: "1.5rem", marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
-          <div style={{ width: 52, height: 52, borderRadius: "50%", background: "#d97706", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, fontWeight: 500, flexShrink: 0 }}>{user.username[0].toUpperCase()}</div>
+          <div style={{ width: 52, height: 52, borderRadius: "50%", background: "#ff4500", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, fontWeight: 800, flexShrink: 0 }}>{user.username[0].toUpperCase()}</div>
           <div>
             <p style={{ margin: "0 0 2px", fontWeight: 500, fontSize: 16 }}>{user.username}</p>
             <p style={{ margin: "0 0 4px", fontSize: 13, color: "#6b7280" }}>{user.email}</p>
@@ -725,7 +1133,16 @@ function ProfilePage({ user, onLogout }) {
             <span style={{ fontSize: 11, background: user.role === "admin" ? "#d97706" : "#f9fafb", color: user.role === "admin" ? "white" : "#6b7280", padding: "2px 8px", borderRadius: 20 }}>{user.role}</span>
           </div>
         </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "0 0 14px" }}>
+          <SocialStatButton label="Posts" value={posts.length} onClick={() => {}} />
+          <SocialStatButton label="Followers" value={followers.length} onClick={() => onNavigate("social-list", { userId: user.id, type: "followers" })} />
+          <SocialStatButton label="Following" value={followingCount} onClick={() => onNavigate("social-list", { userId: user.id, type: "following" })} />
+        </div>
         <p style={{ margin: 0, fontSize: 12, color: "#9ca3af" }}>Member since {new Date(user.joined).toLocaleDateString()}</p>
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>Your posts</h2>
+        <UserPostFeed posts={posts} users={users} comments={comments} currentUser={user} onNavigate={onNavigate} onToggleLike={onToggleLike} onToggleFollow={onToggleFollow} />
       </div>
       <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1.5rem", marginBottom: 14 }}>
         <h2 style={{ margin: "0 0 1rem", fontSize: 16, fontWeight: 500 }}>Change password</h2>
@@ -764,8 +1181,8 @@ function NotificationsPage({ user, notifications, onNavigate, onMarkAllRead }) {
       ) : notifications.map(n => (
         <button
           key={n.id}
-          onClick={() => n.listingId ? onNavigate("item", n.listingId) : null}
-          style={{ width: "100%", textAlign: "left", background: n.read ? "#fff" : "#fffbeb", border: "0.5px solid #e5e7eb", borderRadius: 8, padding: "12px 14px", marginBottom: 10, cursor: n.listingId ? "pointer" : "default" }}
+          onClick={() => n.listingId ? onNavigate("item", n.listingId) : n.actorId ? onNavigate("user-profile", n.actorId) : null}
+          style={{ width: "100%", textAlign: "left", background: n.read ? "#fff" : "#fffbeb", border: "0.5px solid #e5e7eb", borderRadius: 8, padding: "12px 14px", marginBottom: 10, cursor: n.listingId || n.actorId ? "pointer" : "default" }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
             <strong style={{ fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><RedDot show={!n.read} />{n.title}</strong>
@@ -1217,7 +1634,8 @@ function Navbar({ user, page, onNavigate, onLogout, listings = [], exchanges = [
     <nav style={{ background: "#fff", borderBottom: "0.5px solid #f3f4f6", padding: mobile ? "8px 0.75rem" : "0 1.25rem", display: "flex", alignItems: mobile ? "stretch" : "center", justifyContent: "space-between", gap: mobile ? 8 : 0, minHeight: 52, height: mobile ? "auto" : 52, position: "sticky", top: 0, zIndex: 100, flexDirection: mobile ? "column" : "row" }}>
       <button onClick={() => onNavigate("home")} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, padding: "4px 0", justifyContent: mobile ? "center" : "flex-start" }}>
         <span style={{ fontSize: 20 }}>⚖️</span>
-        <span style={{ fontSize: 16, fontWeight: 500, fontFamily: "Georgia, serif", color: "#d97706" }}>BarterHub</span>
+        <span style={{ width: 28, height: 28, borderRadius: "50%", background: "#ff4500", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800 }}>SC</span>
+        <span style={{ fontSize: 16, fontWeight: 800, color: "#ff4500" }}>SwapCircle</span>
       </button>
       <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: mobile ? "nowrap" : "wrap", overflowX: mobile ? "auto" : "visible", paddingBottom: mobile ? 2 : 0 }}>
         {navItems.map(n => (
@@ -1249,24 +1667,27 @@ export default function App() {
   const [pageParam, setPageParam] = useState(null);
   const [listings, setListings] = useState([]);
   const [exchanges, setExchanges] = useState([]);
+  const [comments, setComments] = useState([]);
   const [users, setUsers] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
 
   async function loadAll(activeUserId = user?.id) {
     await userDb.ensureUserNumbers();
-    const [u, l, e, n] = await Promise.all([
+    const [u, l, e, c, n] = await Promise.all([
       userDb.getAll(),
       listingDb.getAll(),
       exchangeDb.getAll(),
-      activeUserId ? notificationDb.getForUser(activeUserId) : Promise.resolve([]),
+      commentDb.getAll(),
+      activeUserId ? notificationDb.deleteReadOlderThan(activeUserId, 24).then(() => notificationDb.getForUser(activeUserId)) : Promise.resolve([]),
     ]);
-    setUsers(u); setListings(l); setExchanges(e); setNotifications(n);
-    return { users: u, listings: l, exchanges: e, notifications: n };
+    setUsers(u); setListings(l); setExchanges(e); setComments(c); setNotifications(n);
+    return { users: u, listings: l, exchanges: e, comments: c, notifications: n };
   }
 
   async function refreshNotifications(activeUserId = user?.id) {
     if (!activeUserId) { setNotifications([]); return []; }
+    await notificationDb.deleteReadOlderThan(activeUserId, 24);
     const n = await notificationDb.getForUser(activeUserId);
     setNotifications(n);
     return n;
@@ -1280,7 +1701,37 @@ export default function App() {
       const nextInterests = { ...(user.interests || {}), [listing.category]: (user.interests?.[listing.category] || 0) + 1 };
       await userDb.update(user.id, { interests: nextInterests });
       setUser({ ...user, interests: nextInterests });
+      await notificationDb.create({
+        userId: listing.userId,
+        actorId: user.id,
+        actorNumber: user.userNumber || null,
+        type: "listing_liked",
+        title: "New like",
+        message: `${user.username} liked ${listing.title}`,
+        listingId: listing.id,
+      });
       trackEvent({ type: "listing_liked", label: listing.title, page, userId: user.id, extra: { userNumber: user.userNumber, listingId: listing.id, listingTitle: listing.title, category: listing.category } });
+    }
+    await loadAll(user.id);
+  }
+
+  async function handleToggleFollow(targetUser) {
+    if (!user) { navigate("login"); return; }
+    if (!targetUser || targetUser.id === user.id) return;
+    const result = await userDb.toggleFollow(user.id, targetUser.id);
+    if (!result) return;
+    const nextUser = { ...user, following: result.following };
+    setUser(nextUser);
+    if (result.isFollowing) {
+      await notificationDb.create({
+        userId: targetUser.id,
+        actorId: user.id,
+        actorNumber: user.userNumber || null,
+        type: "user_followed",
+        title: "New follower",
+        message: `${user.username} followed you`,
+      });
+      trackEvent({ type: "user_followed", label: targetUser.username, page, userId: user.id, extra: { userNumber: user.userNumber, targetUserId: targetUser.id, targetUserNumber: targetUser.userNumber || null } });
     }
     await loadAll(user.id);
   }
@@ -1288,6 +1739,7 @@ export default function App() {
   async function markNotificationsRead() {
     if (!user) return;
     await notificationDb.markAllRead(user.id);
+    await notificationDb.deleteReadOlderThan(user.id, 24);
     await refreshNotifications(user.id);
   }
 
@@ -1336,17 +1788,20 @@ export default function App() {
   );
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f3f4f6" }}>
+    <div style={{ minHeight: "100vh", background: "#dae0e6" }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <Navbar user={user} page={page} onNavigate={navigate} onLogout={handleLogout} listings={listings} exchanges={exchanges} notifications={notifications} />
       <main>
-        {page === "home"         && <HomePage onNavigate={navigate} listings={listings} users={users} currentUser={user} onToggleLike={handleToggleLike} />}
-        {page === "browse"       && <BrowsePage listings={listings} users={users} onNavigate={navigate} currentUser={user} onToggleLike={handleToggleLike} />}
+        {page === "home"         && <HomePage onNavigate={navigate} listings={listings} users={users} comments={comments} currentUser={user} onToggleLike={handleToggleLike} onToggleFollow={handleToggleFollow} />}
+        {page === "browse"       && <BrowsePage listings={listings} users={users} comments={comments} onNavigate={navigate} currentUser={user} onToggleLike={handleToggleLike} onToggleFollow={handleToggleFollow} />}
         {page === "post"         && <PostItemPage user={user} users={users} onPosted={() => loadAll(user?.id)} onNavigate={navigate} />}
-        {page === "item"         && <ItemDetailPage listingId={pageParam} listings={listings} users={users} exchanges={exchanges} user={user} onNavigate={navigate} onRefresh={loadAll} />}
+        {page === "item"         && <ItemDetailPage listingId={pageParam} listings={listings} users={users} exchanges={exchanges} comments={comments} user={user} onNavigate={navigate} onRefresh={loadAll} onToggleLike={handleToggleLike} onToggleFollow={handleToggleFollow} />}
+        {page === "discussion"   && <DiscussionPage listingId={pageParam} listings={listings} users={users} comments={comments} user={user} onNavigate={navigate} onRefresh={loadAll} />}
         {page === "my-listings"  && <MyListingsPage user={user} listings={listings} exchanges={exchanges} onNavigate={navigate} onRefresh={loadAll} />}
         {page === "my-exchanges" && <MyExchangesPage user={user} listings={listings} exchanges={exchanges} users={users} onNavigate={navigate} />}
-        {page === "profile"      && <ProfilePage user={user} onLogout={handleLogout} />}
+        {page === "profile"      && <ProfilePage user={user} users={users} listings={listings} comments={comments} onNavigate={navigate} onToggleLike={handleToggleLike} onToggleFollow={handleToggleFollow} onLogout={handleLogout} />}
+        {page === "user-profile" && <UserProfilePage profileUserId={pageParam} users={users} listings={listings} comments={comments} currentUser={user} onNavigate={navigate} onToggleLike={handleToggleLike} onToggleFollow={handleToggleFollow} />}
+        {page === "social-list"  && <SocialListPage pageParam={pageParam} users={users} currentUser={user} onNavigate={navigate} onToggleFollow={handleToggleFollow} />}
         {page === "notifications" && <NotificationsPage user={user} notifications={notifications} onNavigate={navigate} onMarkAllRead={markNotificationsRead} />}
         {page === "admin"        && <AdminPage user={user} listings={listings} exchanges={exchanges} users={users} onRefresh={loadAll} onNavigate={navigate} />}
         {page === "login"        && <LoginPage onLogin={handleLogin} onNavigate={navigate} />}

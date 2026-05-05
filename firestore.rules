@@ -36,5 +36,11 @@ service cloud.firestore {
       allow read: if true;
       allow write: if true;
     }
+
+    // Comments and replies on listings
+    match /comments/{commentId} {
+      allow read: if true;
+      allow write: if true;
+    }
   }
 }

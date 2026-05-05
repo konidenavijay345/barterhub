@@ -71,6 +71,23 @@ export const userDb = {
     }
   },
 
+  async toggleFollow(userId, targetId) {
+    try {
+      const ref = doc(db, "users", userId);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return null;
+      const user = { id: snap.id, ...snap.data() };
+      const following = Array.isArray(user.following) ? user.following : [];
+      const isFollowing = following.includes(targetId);
+      const nextFollowing = isFollowing ? following.filter(id => id !== targetId) : [...following, targetId];
+      await updateDoc(ref, { following: nextFollowing });
+      return { following: nextFollowing, isFollowing: !isFollowing };
+    } catch (e) {
+      console.error("userDb.toggleFollow failed:", e);
+      throw e;
+    }
+  },
+
   async delete(id) {
     try {
       await deleteDoc(doc(db, "users", id));
@@ -123,6 +140,23 @@ export const listingDb = {
       await updateDoc(doc(db, "listings", id), data);
     } catch (e) {
       console.error("listingDb.update failed:", e);
+      throw e;
+    }
+  },
+
+  async toggleLike(id, userId) {
+    try {
+      const ref = doc(db, "listings", id);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return null;
+      const listing = { id: snap.id, ...snap.data() };
+      const likedBy = Array.isArray(listing.likedBy) ? listing.likedBy : [];
+      const liked = likedBy.includes(userId);
+      const nextLikedBy = liked ? likedBy.filter(x => x !== userId) : [...likedBy, userId];
+      await updateDoc(ref, { likedBy: nextLikedBy, likeCount: nextLikedBy.length });
+      return { liked: !liked, likeCount: nextLikedBy.length, listing };
+    } catch (e) {
+      console.error("listingDb.toggleLike failed:", e);
       throw e;
     }
   },
@@ -182,23 +216,6 @@ export const exchangeDb = {
       await updateDoc(doc(db, "exchanges", id), { ...data, updatedAt: new Date().toISOString() });
     } catch (e) {
       console.error("exchangeDb.update failed:", e);
-      throw e;
-    }
-  },
-
-  async toggleLike(id, userId) {
-    try {
-      const ref = doc(db, "listings", id);
-      const snap = await getDoc(ref);
-      if (!snap.exists()) return null;
-      const listing = { id: snap.id, ...snap.data() };
-      const likedBy = Array.isArray(listing.likedBy) ? listing.likedBy : [];
-      const liked = likedBy.includes(userId);
-      const nextLikedBy = liked ? likedBy.filter(x => x !== userId) : [...likedBy, userId];
-      await updateDoc(ref, { likedBy: nextLikedBy, likeCount: nextLikedBy.length });
-      return { liked: !liked, likeCount: nextLikedBy.length, listing };
-    } catch (e) {
-      console.error("listingDb.toggleLike failed:", e);
       throw e;
     }
   },
@@ -296,6 +313,25 @@ export const notificationDb = {
     }
   },
 
+  async deleteReadOlderThan(userId, hours = 24) {
+    try {
+      if (!userId) return 0;
+      const cutoff = Date.now() - hours * 60 * 60 * 1000;
+      const q = query(col("notifications"), where("userId", "==", userId));
+      const snap = await getDocs(q);
+      const expired = snap.docs.filter(d => {
+        const data = d.data();
+        const readAt = data.readAt ? new Date(data.readAt).getTime() : 0;
+        return data.read === true && readAt > 0 && readAt < cutoff;
+      });
+      await Promise.all(expired.map(d => deleteDoc(d.ref)));
+      return expired.length;
+    } catch (e) {
+      console.error("notificationDb.deleteReadOlderThan failed:", e);
+      return 0;
+    }
+  },
+
   async markListingRead(userId, listingId) {
     try {
       const q = query(col("notifications"), where("userId", "==", userId), where("listingId", "==", listingId));
@@ -303,6 +339,44 @@ export const notificationDb = {
       await Promise.all(snap.docs.map(d => updateDoc(d.ref, { read: true, readAt: new Date().toISOString() })));
     } catch (e) {
       console.error("notificationDb.markListingRead failed:", e);
+    }
+  },
+};
+
+// Comments
+
+export const commentDb = {
+  async getAll() {
+    try {
+      const snap = await getDocs(col("comments"));
+      const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return items.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    } catch (e) {
+      console.error("commentDb.getAll failed:", e);
+      return [];
+    }
+  },
+
+  async create(data) {
+    try {
+      const ref = await addDoc(col("comments"), {
+        ...data,
+        createdAt: new Date().toISOString(),
+        active: true,
+      });
+      return { ...data, id: ref.id };
+    } catch (e) {
+      console.error("commentDb.create failed:", e);
+      throw e;
+    }
+  },
+
+  async delete(id) {
+    try {
+      await updateDoc(doc(db, "comments", id), { active: false, deletedAt: new Date().toISOString() });
+    } catch (e) {
+      console.error("commentDb.delete failed:", e);
+      throw e;
     }
   },
 };
