@@ -191,9 +191,6 @@ function LoginPage({ onLogin, onNavigate }) {
         <p style={{ textAlign: "center", marginTop: 16, fontSize: 13, color: "#6b7280" }}>
           No account? <button onClick={() => { trackCTA("go_to_register", "login"); onNavigate("register"); }} style={{ background: "none", border: "none", color: "#d97706", cursor: "pointer", fontSize: 13 }}>Register</button>
         </p>
-        <div style={{ marginTop: 16, padding: "10px 12px", background: "#f9fafb", borderRadius: 8, fontSize: 12, color: "#6b7280" }}>
-          Default admin: <strong>admin</strong> / <strong>admin123</strong>
-        </div>
       </div>
     </div>
   );
