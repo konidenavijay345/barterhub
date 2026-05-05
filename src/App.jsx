@@ -681,8 +681,13 @@ function ItemDetailPage({ listingId, listings, users, exchanges, comments, user,
               Make an offer
             </button>
           ) : myOffer ? (
-            <div style={{ padding: "10px 12px", background: "#eff6ff", borderRadius: 8, fontSize: 13, color: "#2563eb" }}>
+            <div style={{ padding: "10px 12px", background: myOffer.status === "declined" ? "#fef2f2" : "#eff6ff", borderRadius: 8, fontSize: 13, color: myOffer.status === "declined" ? "#991b1b" : "#2563eb" }}>
               Your offer is <strong>{myOffer.status}</strong>
+              {myOffer.status === "declined" && (
+                <p style={{ margin: "6px 0 0", color: "#7f1d1d", lineHeight: 1.45 }}>
+                  This offer was declined by the post owner. You cannot send another offer for this same item.
+                </p>
+              )}
             </div>
           ) : (
             <div style={{ padding: "10px 12px", background: "#f9fafb", borderRadius: 8, fontSize: 13, color: "#6b7280" }}>
@@ -956,6 +961,11 @@ function MyExchangesPage({ user, listings, exchanges, users, onNavigate }) {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}><span style={{ fontSize: 14, fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}><RedDot show={ex.status !== "pending" && ex.statusSeenByOfferer === false} />You offered: {ex.offerTitle}</span><Badge status={ex.status} /></div>
                   <p style={{ margin: "0 0 4px", fontSize: 13, color: "#6b7280" }}>{ex.offerDescription}</p>
+                  {ex.status === "declined" && (
+                    <p style={{ margin: "0 0 6px", fontSize: 12, color: "#991b1b", background: "#fef2f2", border: "0.5px solid #fecaca", borderRadius: 8, padding: "7px 9px" }}>
+                      Declined by the post owner. You cannot send another offer for this same item.
+                    </p>
+                  )}
                   <p style={{ margin: 0, fontSize: 12, color: "#9ca3af" }}>For: <button onClick={() => listing && onNavigate("item", listing.id)} style={{ background: "none", border: "none", color: "#d97706", cursor: "pointer", fontSize: 12, padding: 0 }}>{listing?.title || "Deleted listing"}</button>{lo && ` by ${lo.username}`} · {timeAgo(ex.createdAt)}</p>
                 </div>
               </div>
