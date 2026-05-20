@@ -36,6 +36,44 @@ body {
   overflow-x: hidden;
 }
 
+[data-theme="dark"] body {
+  color: #e5e7eb;
+  background: #111827;
+}
+
+[data-theme="dark"] nav,
+[data-theme="dark"] main div[style*="background: #fff"],
+[data-theme="dark"] main div[style*="background:#fff"] {
+  background: #1f2937 !important;
+  border-color: #374151 !important;
+  color: #e5e7eb !important;
+}
+
+[data-theme="dark"] main div[style*="background: #f9fafb"],
+[data-theme="dark"] main div[style*="background:#f9fafb"],
+[data-theme="dark"] main button[style*="background: #f9fafb"] {
+  background: #111827 !important;
+  border-color: #374151 !important;
+}
+
+[data-theme="dark"] input,
+[data-theme="dark"] textarea,
+[data-theme="dark"] select {
+  background: #111827;
+  color: #f9fafb;
+  border-color: #4b5563;
+}
+
+[data-theme="dark"] p,
+[data-theme="dark"] h1,
+[data-theme="dark"] h2,
+[data-theme="dark"] h3,
+[data-theme="dark"] span,
+[data-theme="dark"] td,
+[data-theme="dark"] th {
+  color: inherit;
+}
+
 input, textarea, select {
   font-family: inherit;
   font-size: 14px;
@@ -66,6 +104,25 @@ table {
 @media (max-width: 760px) {
   input, textarea, select, button {
     font-size: 16px;
+  }
+
+  nav {
+    height: auto !important;
+    min-height: 52px;
+    align-items: flex-start !important;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 10px 1rem !important;
+  }
+
+  .detail-grid,
+  .chat-grid,
+  .admin-stats-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .chat-grid > div:last-child {
+    min-height: 68vh !important;
   }
 
   table {

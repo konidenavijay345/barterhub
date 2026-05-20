@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { auth } from "./auth";
-import { userDb, listingDb, exchangeDb, analyticsDb, notificationDb, commentDb } from "./database";
+import { userDb, listingDb, exchangeDb, analyticsDb, chatDb, reportDb, ratingDb, appealDb } from "./database";
 import { trackPageView, trackCTA, trackEvent } from "./analytics";
 
 const CATEGORIES = ["Electronics","Clothing","Books","Tools","Furniture","Food","Art","Sports","Vehicles","Other"];
-const POST_PAGE_SIZE = 8;
 
 function timeAgo(iso) {
   if (!iso) return "";
@@ -13,48 +12,172 @@ function timeAgo(iso) {
   if (d > 0) return `${d}d ago`; if (h > 0) return `${h}h ago`; if (m > 0) return `${m}m ago`; return "just now";
 }
 
-function userNumber(user) {
-  return user?.userNumber || "----";
-}
-
-function RedDot({ show }) {
-  if (!show) return null;
-  return <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#dc2626", display: "inline-block", boxShadow: "0 0 0 2px #fff" }} />;
-}
-
-function interestScore(listing, user) {
-  if (!user) return listing.likeCount || listing.likedBy?.length || 0;
-  const interests = user.interests || {};
-  const followsOwner = Array.isArray(user.following) && user.following.includes(listing.userId);
-  return (followsOwner ? 40 : 0) + (interests[listing.category] || 0) * 10 + (listing.likeCount || listing.likedBy?.length || 0);
-}
-
-function sortByInterest(listings, user) {
-  return [...listings].sort((a, b) => interestScore(b, user) - interestScore(a, user) || new Date(b.createdAt) - new Date(a.createdAt));
-}
-
-function loadMoreOnScroll(e, hasMore, onLoadMore) {
-  if (!hasMore) return;
-  const el = e.currentTarget;
-  if (el.scrollHeight - el.scrollTop - el.clientHeight < 160) onLoadMore();
-}
-
-function useMediaQuery(query) {
-  const [matches, setMatches] = useState(false);
-  useEffect(() => {
-    const media = window.matchMedia(query);
-    const update = () => setMatches(media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, [query]);
-  return matches;
-}
-
 function fileToBase64(file) {
   return new Promise((res, rej) => {
     const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej; r.readAsDataURL(file);
   });
+}
+
+const CHAT_DAILY_LIMIT = 150;
+const CHAT_EDIT_WINDOW_MS = 15 * 60 * 1000;
+
+function publicUserId(user) {
+  return user?.encryptedId || "Pending ID";
+}
+
+function avgRating(items, selector) {
+  const values = items.map(selector).filter(v => Number(v) > 0);
+  if (!values.length) return null;
+  return values.reduce((sum, v) => sum + Number(v), 0) / values.length;
+}
+
+function chatSecret(thread) {
+  return `BarterHub.chat.${thread.id}.${(thread.participants || []).slice().sort().join(".")}`;
+}
+
+async function deriveChatKey(secret) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: new TextEncoder().encode("BarterHub.Chat.v1"), iterations: 100000, hash: "SHA-256" },
+    base,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+function bytesToB64(bytes) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)));
+}
+
+function b64ToBytes(text) {
+  return Uint8Array.from(atob(text), c => c.charCodeAt(0));
+}
+
+async function encryptChatText(text, thread) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveChatKey(chatSecret(thread));
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(text));
+  return { ciphertext: bytesToB64(cipher), iv: bytesToB64(iv), encryption: "AES-GCM-PBKDF2-v1" };
+}
+
+async function decryptChatText(message, thread) {
+  if (message.deleted) return "Message deleted";
+  try {
+    const key = await deriveChatKey(chatSecret(thread));
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64ToBytes(message.iv) }, key, b64ToBytes(message.ciphertext));
+    return new TextDecoder().decode(plain);
+  } catch {
+    return "Unable to decrypt message";
+  }
+}
+
+function ChatTermsGate({ user, onAccept, onDecline }) {
+  const [checked, setChecked] = useState(false);
+  const [loading, setLoading] = useState(false);
+  async function accept() {
+    setLoading(true);
+    const patch = { chatTermsAcceptedAt: new Date().toISOString(), chatTermsVersion: "2026-05-20" };
+    await userDb.update(user.id, patch);
+    onAccept({ ...user, ...patch });
+    setLoading(false);
+  }
+  return (
+    <div style={{ maxWidth: 720, margin: "2rem auto", padding: "0 1rem" }}>
+      <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1.5rem" }}>
+        <h1 style={{ margin: "0 0 1rem", fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif" }}>Chat terms and guidelines</h1>
+        <p style={{ margin: "0 0 1rem", color: "#6b7280", fontSize: 14 }}>Before using chats, acknowledge these rules so conversations stay respectful and BarterHub stays protected.</p>
+        {[
+          "Use chat only for exchange coordination and lawful, respectful communication.",
+          "You are responsible for what you send. Do not harass, threaten, scam, impersonate, share illegal content, or post private information without consent.",
+          "BarterHub is not responsible for user-generated messages, opinions, promises, meetup decisions, or disputes between users.",
+          "Messages are encrypted in storage, but participants can still report, copy, screenshot, or share what they receive.",
+          "You may edit or delete your own message for 15 minutes after sending. After that window, the message history is locked in the app.",
+          "BarterHub may restrict accounts, preserve metadata, or remove access when needed for safety, abuse prevention, legal compliance, or platform integrity.",
+        ].map(item => <p key={item} style={{ margin: "0 0 10px", fontSize: 13, color: "#374151" }}>• {item}</p>)}
+        <label style={{ display: "flex", gap: 10, alignItems: "flex-start", marginTop: 16, fontSize: 13, color: "#374151" }}>
+          <input type="checkbox" checked={checked} onChange={e => setChecked(e.target.checked)} style={{ marginTop: 2 }} />
+          <span>I understand and agree to these chat terms and guidelines.</span>
+        </label>
+        <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
+          <button onClick={accept} disabled={!checked || loading} style={{ padding: "9px 16px", background: "#d97706", color: "white", border: "none", borderRadius: 8, opacity: !checked || loading ? 0.6 : 1 }}>{loading ? "Saving..." : "Accept and continue"}</button>
+          <button onClick={onDecline} style={{ padding: "9px 16px", background: "#fff", color: "#374151", border: "0.5px solid #e5e7eb", borderRadius: 8 }}>Not now</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReportBox({ title, onSubmit, onCancel }) {
+  const [reason, setReason] = useState("");
+  const [details, setDetails] = useState("");
+  const [loading, setLoading] = useState(false);
+  async function submit(e) {
+    e.preventDefault();
+    setLoading(true);
+    await onSubmit({ reason, details });
+    setReason("");
+    setDetails("");
+    setLoading(false);
+  }
+  return (
+    <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1rem", marginTop: 12 }}>
+      <h3 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 500 }}>{title}</h3>
+      <form onSubmit={submit}>
+        <select value={reason} onChange={e => setReason(e.target.value)} required style={{ width: "100%", marginBottom: 10 }}>
+          <option value="">Select reason</option>
+          <option value="misleading">Misleading or fake item</option>
+          <option value="unsafe">Unsafe or prohibited content</option>
+          <option value="abuse">Abusive or suspicious behavior</option>
+          <option value="spam">Spam or scam</option>
+          <option value="other">Other</option>
+        </select>
+        <textarea value={details} onChange={e => setDetails(e.target.value)} required rows={3} placeholder="Add details for the admin team" style={{ width: "100%", resize: "vertical", marginBottom: 10 }} />
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="submit" disabled={loading} style={{ padding: "8px 14px", background: "#dc2626", color: "white", border: "none", borderRadius: 8, opacity: loading ? 0.7 : 1 }}>Submit report</button>
+          <button type="button" onClick={onCancel} style={{ padding: "8px 14px", background: "#fff", border: "0.5px solid #e5e7eb", borderRadius: 8 }}>Cancel</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function RatingBox({ exchange, listing, user, targetUser, existing, onRated }) {
+  const [productRating, setProductRating] = useState(existing?.productRating || 5);
+  const [userRating, setUserRating] = useState(existing?.userRating || 5);
+  const [comment, setComment] = useState(existing?.comment || "");
+  const [loading, setLoading] = useState(false);
+  if (existing) return <p style={{ margin: "8px 0 0", fontSize: 12, color: "#16a34a" }}>You rated this exchange.</p>;
+  async function submit(e) {
+    e.preventDefault();
+    setLoading(true);
+    await ratingDb.create({
+      exchangeId: exchange.id,
+      listingId: listing?.id || exchange.listingId,
+      productOwnerId: listing?.userId || null,
+      targetUserId: targetUser?.id || null,
+      raterId: user.id,
+      productRating: Number(productRating),
+      userRating: Number(userRating),
+      comment: comment.trim(),
+    });
+    await onRated();
+    setLoading(false);
+  }
+  return (
+    <form onSubmit={submit} style={{ marginTop: 10, background: "#f9fafb", borderRadius: 8, padding: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <label style={{ fontSize: 12, color: "#6b7280" }}>Product rating
+          <select value={productRating} onChange={e => setProductRating(e.target.value)} style={{ width: "100%", marginTop: 4 }}>{[5,4,3,2,1].map(n => <option key={n} value={n}>{n} stars</option>)}</select>
+        </label>
+        <label style={{ fontSize: 12, color: "#6b7280" }}>User rating
+          <select value={userRating} onChange={e => setUserRating(e.target.value)} style={{ width: "100%", marginTop: 4 }}>{[5,4,3,2,1].map(n => <option key={n} value={n}>{n} stars</option>)}</select>
+        </label>
+      </div>
+      <textarea value={comment} onChange={e => setComment(e.target.value)} rows={2} placeholder="Optional note" style={{ width: "100%", resize: "vertical", marginTop: 8 }} />
+      <button type="submit" disabled={loading} style={{ marginTop: 8, padding: "6px 12px", background: "#d97706", color: "white", border: "none", borderRadius: 8, fontSize: 12, opacity: loading ? 0.7 : 1 }}>{loading ? "Saving..." : "Save rating"}</button>
+    </form>
+  );
 }
 
 const STATUS_COLORS = {
@@ -97,11 +220,8 @@ function Alert({ type, msg, onClose }) {
   );
 }
 
-function ListingCard({ listing, users, comments = [], onClick, onOpenComments, page, currentUser, onToggleLike, onToggleFollow }) {
+function ListingCard({ listing, users, onClick, page, currentUser }) {
   const owner = users.find(u => u.id === listing.userId);
-  const liked = currentUser && Array.isArray(listing.likedBy) && listing.likedBy.includes(currentUser.id);
-  const followsOwner = currentUser && Array.isArray(currentUser.following) && currentUser.following.includes(listing.userId);
-  const commentCount = comments.filter(c => c.listingId === listing.id && c.active !== false).length;
   return (
     <div
       onClick={() => { trackCTA(`listing_card_${listing.title}`, page, currentUser?.id); onClick(listing); }}
@@ -117,35 +237,14 @@ function ListingCard({ listing, users, comments = [], onClick, onOpenComments, p
       <div style={{ padding: "12px 14px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6, gap: 8 }}>
           <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500, flex: 1, lineHeight: 1.3 }}>{listing.title}</h3>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <button
-              onClick={e => { e.stopPropagation(); onToggleLike?.(listing); }}
-              title={liked ? "Unlike" : "Like"}
-              className={liked ? "like-pop" : ""}
-              style={{ border: "none", background: liked ? "#fee2e2" : "#f9fafb", color: liked ? "#dc2626" : "#6b7280", borderRadius: 999, padding: "3px 8px", fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
-            >
-              {liked ? "♥" : "♡"} {listing.likeCount || listing.likedBy?.length || 0}
-            </button>
-            <Badge status={listing.status} />
-          </div>
+          <Badge status={listing.status} />
         </div>
         <p style={{ margin: "0 0 8px", fontSize: 13, color: "#6b7280", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{listing.description}</p>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
           <span style={{ fontSize: 11, color: "#9ca3af" }}>{owner?.username || "Unknown"} · {timeAgo(listing.createdAt)}</span>
           <span style={{ fontSize: 11, background: "#f9fafb", padding: "2px 8px", borderRadius: 20, color: "#6b7280" }}>{listing.category}</span>
         </div>
-        {currentUser && owner && owner.id !== currentUser.id && (
-          <button onClick={e => { e.stopPropagation(); onToggleFollow?.(owner); }} style={{ border: "none", background: followsOwner ? "#111827" : "#eef2ff", color: followsOwner ? "#fff" : "#3730a3", borderRadius: 999, padding: "3px 8px", fontSize: 11, marginBottom: 8 }}>
-            {followsOwner ? "Following" : `Follow #${userNumber(owner)}`}
-          </button>
-        )}
         <div style={{ fontSize: 12, color: "#d97706", fontStyle: "italic", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>Wants: {listing.wantInReturn}</div>
-        <div style={{ marginTop: 8, display: "flex", gap: 12, color: "#6b7280", fontSize: 12 }}>
-          <button onClick={e => { e.stopPropagation(); onOpenComments?.(listing); }} style={{ border: "none", background: "none", padding: 0, color: "#0079d3", fontSize: 12 }}>
-            {commentCount} comment{commentCount !== 1 ? "s" : ""}
-          </button>
-          <span>{listing.likeCount || listing.likedBy?.length || 0} like{(listing.likeCount || listing.likedBy?.length || 0) !== 1 ? "s" : ""}</span>
-        </div>
       </div>
     </div>
   );
@@ -159,7 +258,7 @@ function LoginPage({ onLogin, onNavigate }) {
     e.preventDefault(); setErr(""); setLoading(true);
     try {
       const user = await auth.login(id, pw);
-      trackEvent({ type: "login", label: "login_success", page: "login", userId: user.id, extra: { userNumber: user.userNumber || null } });
+      trackEvent({ type: "login", label: "login_success", page: "login", userId: user.id });
       onLogin(user);
     } catch (e) { setErr(e.message); } finally { setLoading(false); }
   }
@@ -167,8 +266,7 @@ function LoginPage({ onLogin, onNavigate }) {
     <div style={{ maxWidth: 400, margin: "4rem auto", padding: "0 1rem" }}>
       <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "2rem" }}>
         <div style={{ textAlign: "center", marginBottom: "1.5rem" }}>
-          <span style={{ fontSize: 32 }}>⚖️</span>
-          <h2 style={{ margin: "8px 0 0", fontSize: 22, fontWeight: 700 }}>Sign in to SwapCircle</h2>
+          <h2 style={{ margin: "8px 0 0", fontSize: 22, fontWeight: 500, fontFamily: "Georgia, serif" }}>Sign in to BarterHub</h2>
         </div>
         <Alert type="error" msg={err} onClose={() => setErr("")} />
         <form onSubmit={handle}>
@@ -191,6 +289,15 @@ function LoginPage({ onLogin, onNavigate }) {
         <p style={{ textAlign: "center", marginTop: 16, fontSize: 13, color: "#6b7280" }}>
           No account? <button onClick={() => { trackCTA("go_to_register", "login"); onNavigate("register"); }} style={{ background: "none", border: "none", color: "#d97706", cursor: "pointer", fontSize: 13 }}>Register</button>
         </p>
+        <p style={{ textAlign: "center", marginTop: 8, fontSize: 13 }}>
+          <button onClick={() => onNavigate("reset-password")} style={{ background: "none", border: "none", color: "#d97706", cursor: "pointer", fontSize: 13 }}>Forgot password?</button>
+        </p>
+        <p style={{ textAlign: "center", marginTop: 8, fontSize: 13 }}>
+          <button onClick={() => onNavigate("appeal")} style={{ background: "none", border: "none", color: "#d97706", cursor: "pointer", fontSize: 13 }}>Account suspended? Appeal</button>
+        </p>
+        <div style={{ marginTop: 16, padding: "10px 12px", background: "#f9fafb", borderRadius: 8, fontSize: 12, color: "#6b7280" }}>
+          Default admin: <strong>admin</strong> / <strong>admin123</strong>
+        </div>
       </div>
     </div>
   );
@@ -207,7 +314,7 @@ function RegisterPage({ onLogin, onNavigate }) {
     try {
       const user = await auth.register(form.username, form.email, form.password);
       await auth.login(form.username, form.password);
-      trackEvent({ type: "register", label: "register_success", page: "register", userId: user.id, extra: { userNumber: user.userNumber || null } });
+      trackEvent({ type: "register", label: "register_success", page: "register", userId: user.id });
       onLogin(user);
     } catch (e) { setErr(e.message); } finally { setLoading(false); }
   }
@@ -221,8 +328,7 @@ function RegisterPage({ onLogin, onNavigate }) {
     <div style={{ maxWidth: 400, margin: "4rem auto", padding: "0 1rem" }}>
       <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "2rem" }}>
         <div style={{ textAlign: "center", marginBottom: "1.5rem" }}>
-          <span style={{ fontSize: 32 }}>⚖️</span>
-          <h2 style={{ margin: "8px 0 0", fontSize: 22, fontWeight: 700 }}>Join SwapCircle</h2>
+          <h2 style={{ margin: "8px 0 0", fontSize: 22, fontWeight: 500, fontFamily: "Georgia, serif" }}>Join BarterHub</h2>
         </div>
         <Alert type="error" msg={err} onClose={() => setErr("")} />
         <form onSubmit={handle}>
@@ -248,15 +354,119 @@ function RegisterPage({ onLogin, onNavigate }) {
   );
 }
 
-function HomePage({ onNavigate, listings, users, comments, currentUser, onToggleLike, onToggleFollow }) {
-  const mobile = useMediaQuery("(max-width: 640px)");
-  const featured = sortByInterest(listings.filter(l => l.status === "available" && l.userId !== currentUser?.id), currentUser).slice(0, 6);
+function ResetPasswordPage({ onNavigate }) {
+  const [form, setForm] = useState({ username: "", email: "", password: "", confirm: "" });
+  const [err, setErr] = useState(""), [success, setSuccess] = useState(""), [loading, setLoading] = useState(false);
+  async function handle(e) {
+    e.preventDefault();
+    if (form.password !== form.confirm) { setErr("Passwords don't match"); return; }
+    setErr(""); setSuccess(""); setLoading(true);
+    try {
+      await auth.resetPasswordByIdentity(form.username, form.email, form.password);
+      setSuccess("Password updated. You can sign in now.");
+      setForm({ username: "", email: "", password: "", confirm: "" });
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  return (
+    <div style={{ maxWidth: 420, margin: "4rem auto", padding: "0 1rem" }}>
+      <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "2rem" }}>
+        <h2 style={{ margin: "0 0 1.25rem", fontSize: 22, fontWeight: 500, fontFamily: "Georgia, serif", textAlign: "center" }}>Reset password</h2>
+        <Alert type="error" msg={err} onClose={() => setErr("")} />
+        <Alert type="success" msg={success} onClose={() => setSuccess("")} />
+        <form onSubmit={handle}>
+          {[
+            { k: "username", l: "Username", t: "text" },
+            { k: "email", l: "Email", t: "email" },
+            { k: "password", l: "New password", t: "password" },
+            { k: "confirm", l: "Confirm new password", t: "password" },
+          ].map(f => (
+            <div key={f.k} style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 13, color: "#6b7280", display: "block", marginBottom: 4 }}>{f.l}</label>
+              <input type={f.t} value={form[f.k]} required onChange={e => setForm(p => ({ ...p, [f.k]: e.target.value }))} style={{ width: "100%" }} />
+            </div>
+          ))}
+          <button type="submit" disabled={loading} style={{ width: "100%", padding: "11px", background: "#d97706", color: "white", border: "none", borderRadius: 8, fontSize: 14, opacity: loading ? 0.7 : 1 }}>{loading ? "Updating..." : "Update password"}</button>
+        </form>
+        <button onClick={() => onNavigate("login")} style={{ marginTop: 14, width: "100%", background: "none", border: "none", color: "#d97706", fontSize: 13 }}>Back to sign in</button>
+      </div>
+    </div>
+  );
+}
+
+function AppealPage({ onNavigate }) {
+  const [form, setForm] = useState({ username: "", email: "", message: "" });
+  const [err, setErr] = useState(""), [success, setSuccess] = useState(""), [loading, setLoading] = useState(false);
+  async function handle(e) {
+    e.preventDefault();
+    setErr(""); setSuccess(""); setLoading(true);
+    try {
+      const users = await userDb.getAll();
+      const target = users.find(u => u.username.toLowerCase() === form.username.toLowerCase().trim() && u.email.toLowerCase() === form.email.toLowerCase().trim());
+      await appealDb.create({
+        userId: target?.id || null,
+        username: form.username.trim(),
+        email: form.email.toLowerCase().trim(),
+        message: form.message.trim(),
+      });
+      setSuccess("Appeal submitted. Admin will review it in moderation.");
+      setForm({ username: "", email: "", message: "" });
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  return (
+    <div style={{ maxWidth: 520, margin: "4rem auto", padding: "0 1rem" }}>
+      <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "2rem" }}>
+        <h2 style={{ margin: "0 0 1.25rem", fontSize: 22, fontWeight: 500, fontFamily: "Georgia, serif", textAlign: "center" }}>Account appeal</h2>
+        <Alert type="error" msg={err} onClose={() => setErr("")} />
+        <Alert type="success" msg={success} onClose={() => setSuccess("")} />
+        <form onSubmit={handle}>
+          <input value={form.username} onChange={e => setForm(p => ({ ...p, username: e.target.value }))} placeholder="Username" required style={{ width: "100%", marginBottom: 12 }} />
+          <input type="email" value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} placeholder="Email" required style={{ width: "100%", marginBottom: 12 }} />
+          <textarea value={form.message} onChange={e => setForm(p => ({ ...p, message: e.target.value }))} placeholder="Explain why the suspension should be reviewed" rows={4} required style={{ width: "100%", resize: "vertical", marginBottom: 12 }} />
+          <button type="submit" disabled={loading} style={{ width: "100%", padding: "11px", background: "#d97706", color: "white", border: "none", borderRadius: 8, opacity: loading ? 0.7 : 1 }}>{loading ? "Submitting..." : "Submit appeal"}</button>
+        </form>
+        <button onClick={() => onNavigate("login")} style={{ marginTop: 14, width: "100%", background: "none", border: "none", color: "#d97706", fontSize: 13 }}>Back to sign in</button>
+      </div>
+    </div>
+  );
+}
+
+function SettingsPage({ darkMode, onDarkModeChange }) {
+  return (
+    <div style={{ maxWidth: 560, margin: "2rem auto", padding: "0 1rem" }}>
+      <h1 style={{ fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif", marginBottom: "1.5rem" }}>Settings</h1>
+      <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1.5rem" }}>
+        <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, cursor: "pointer" }}>
+          <span>
+            <span style={{ display: "block", fontSize: 15, fontWeight: 500 }}>Dark mode</span>
+            <span style={{ display: "block", fontSize: 12, color: "#6b7280", marginTop: 2 }}>Use a darker interface across BarterHub.</span>
+          </span>
+          <input type="checkbox" checked={darkMode} onChange={e => onDarkModeChange(e.target.checked)} style={{ width: 18, height: 18 }} />
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function HomePage({ onNavigate, listings, users, currentUser, onUserUpdate }) {
+  const featured = listings.filter(l => l.status === "available").slice(0, 6);
+  async function dismissChatBanner() {
+    if (!currentUser) return;
+    await userDb.update(currentUser.id, { messagingBannerSeen: true });
+    onUserUpdate({ ...currentUser, messagingBannerSeen: true });
+  }
   return (
     <div>
-      <div style={{ background: "linear-gradient(135deg,#ff4500 0%,#0079d3 100%)", padding: mobile ? "2.5rem 1rem" : "4rem 2rem", textAlign: "center", color: "white" }}>
-        <div style={{ fontSize: 40, marginBottom: 16 }}>⚖️</div>
-        <h1 style={{ margin: "0 0 1rem", fontSize: mobile ? 28 : 38, fontWeight: 800, lineHeight: 1.15 }}>SwapCircle</h1>
-        <p style={{ margin: "0 0 2rem", fontSize: 15, opacity: 0.95, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>A community feed for swaps, offers, likes, follows, and item discussions.</p>
+      <div style={{ background: "linear-gradient(135deg,#78350f 0%,#d97706 100%)", padding: "4rem 2rem", textAlign: "center", color: "white" }}>
+        <h1 style={{ margin: "0 0 1rem", fontSize: 34, fontWeight: 500, fontFamily: "Georgia, serif", lineHeight: 1.3 }}>Trade What You Have.<br />Get What You Need.</h1>
+        <p style={{ margin: "0 0 2rem", fontSize: 15, opacity: 0.9, maxWidth: 480, marginLeft: "auto", marginRight: "auto" }}>A community marketplace for bartering goods — no money needed.</p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
           <button onClick={() => { trackCTA("hero_browse_listings", "home", currentUser?.id); onNavigate("browse"); }}
             style={{ padding: "11px 28px", background: "white", color: "#92400e", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 15, fontWeight: 500 }}>
@@ -269,7 +479,19 @@ function HomePage({ onNavigate, listings, users, comments, currentUser, onToggle
         </div>
       </div>
 
-      <div style={{ padding: mobile ? "2rem 1rem" : "3rem 2rem", maxWidth: 900, margin: "0 auto" }}>
+      {currentUser && !currentUser.messagingBannerSeen && (
+        <div style={{ maxWidth: 900, margin: "1.25rem auto 0", padding: "0 1rem" }}>
+          <div style={{ background: "#111827", color: "white", borderRadius: 10, padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+            <div>
+              <p style={{ margin: 0, fontSize: 14, fontWeight: 500 }}>Encrypted chats are now live</p>
+              <p style={{ margin: "2px 0 0", fontSize: 12, color: "#d1d5db" }}>Accepted exchanges can now continue in a private chat with typing status.</p>
+            </div>
+            <button onClick={dismissChatBanner} style={{ background: "rgba(255,255,255,0.12)", color: "white", border: "0.5px solid rgba(255,255,255,0.3)", borderRadius: 8, padding: "6px 10px", fontSize: 12 }}>Dismiss</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ padding: "3rem 2rem", maxWidth: 900, margin: "0 auto" }}>
         <h2 style={{ textAlign: "center", marginBottom: "2rem", fontSize: 20, fontWeight: 500, fontFamily: "Georgia, serif" }}>How it works</h2>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 20 }}>
           {[
@@ -288,16 +510,16 @@ function HomePage({ onNavigate, listings, users, comments, currentUser, onToggle
       </div>
 
       {featured.length > 0 && (
-        <div style={{ padding: mobile ? "0 1rem 2rem" : "0 2rem 3rem", maxWidth: 900, margin: "0 auto" }}>
+        <div style={{ padding: "0 2rem 3rem", maxWidth: 900, margin: "0 auto" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 500, fontFamily: "Georgia, serif" }}>{currentUser?.interests ? "Recommended listings" : "Recent listings"}</h2>
+            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 500, fontFamily: "Georgia, serif" }}>Recent listings</h2>
             <button onClick={() => { trackCTA("home_see_all", "home", currentUser?.id); onNavigate("browse"); }}
               style={{ background: "none", border: "none", color: "#d97706", cursor: "pointer", fontSize: 14 }}>See all →</button>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
             {featured.map(l => (
-              <ListingCard key={l.id} listing={l} users={users} comments={comments} page="home" currentUser={currentUser}
-                onClick={() => onNavigate("item", l.id)} onOpenComments={() => onNavigate("discussion", l.id)} onToggleLike={onToggleLike} onToggleFollow={onToggleFollow} />
+              <ListingCard key={l.id} listing={l} users={users} page="home" currentUser={currentUser}
+                onClick={() => onNavigate("item", l.id)} />
             ))}
           </div>
         </div>
@@ -306,45 +528,15 @@ function HomePage({ onNavigate, listings, users, comments, currentUser, onToggle
   );
 }
 
-function BrowsePage({ listings, users, comments, onNavigate, currentUser, onToggleLike, onToggleFollow }) {
-  const mobile = useMediaQuery("(max-width: 640px)");
-  const [search, setSearch] = useState(""), [cat, setCat] = useState(""), [status, setStatus] = useState(""), [feed, setFeed] = useState("all");
-  const [visibleCount, setVisibleCount] = useState(POST_PAGE_SIZE);
-  const filtered = sortByInterest(listings.filter(l => {
+function BrowsePage({ listings, users, onNavigate, currentUser }) {
+  const [search, setSearch] = useState(""), [cat, setCat] = useState(""), [status, setStatus] = useState("available");
+  const filtered = listings.filter(l => {
     const ms = !search || l.title.toLowerCase().includes(search.toLowerCase()) || l.description.toLowerCase().includes(search.toLowerCase());
-    const follows = feed !== "following" || (currentUser?.following || []).includes(l.userId);
-    return ms && follows && (!cat || l.category === cat) && (!status || l.status === status);
-  }), currentUser);
-  const visibleListings = filtered.slice(0, visibleCount);
-  const hasMoreListings = visibleCount < filtered.length;
-  useEffect(() => {
-    setVisibleCount(POST_PAGE_SIZE);
-  }, [search, cat, status, feed, currentUser?.id, listings.length]);
-  if (!currentUser) {
-    return (
-      <div style={{ maxWidth: 620, margin: "4rem auto", padding: "0 1rem", textAlign: "center" }}>
-        <div style={{ background: "#fff", border: "0.5px solid #cfd6dc", borderRadius: 8, padding: mobile ? "2rem 1rem" : "2.5rem" }}>
-          <div style={{ width: 54, height: 54, borderRadius: "50%", background: "#ff4500", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 20, marginBottom: 14 }}>SC</div>
-          <h1 style={{ margin: "0 0 10px", fontSize: 26, fontWeight: 700 }}>Join SwapCircle</h1>
-          <p style={{ margin: "0 auto 22px", color: "#6b7280", maxWidth: 430 }}>Sign in to see community posts, like items, follow users, and join discussions.</p>
-          <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
-            <button onClick={() => onNavigate("login")} style={{ padding: "10px 18px", border: "none", borderRadius: 999, background: "#ff4500", color: "#fff", fontWeight: 700 }}>Sign in</button>
-            <button onClick={() => onNavigate("register")} style={{ padding: "10px 18px", border: "0.5px solid #0079d3", borderRadius: 999, background: "#fff", color: "#0079d3", fontWeight: 700 }}>Create account</button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+    return ms && (!cat || l.category === cat) && (!status || l.status === status);
+  });
   return (
     <div style={{ maxWidth: 1000, margin: "0 auto", padding: "2rem 1rem" }}>
       <h1 style={{ margin: "0 0 1.5rem", fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif" }}>Browse listings</h1>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-        {["all", "following"].map(mode => (
-          <button key={mode} onClick={() => setFeed(mode)} style={{ padding: "7px 12px", border: "0.5px solid #e5e7eb", borderRadius: 999, background: feed === mode ? "#ff4500" : "#fff", color: feed === mode ? "#fff" : "#374151", fontSize: 13 }}>
-            {mode === "all" ? "All posts" : "Following"}
-          </button>
-        ))}
-      </div>
       <div style={{ display: "flex", gap: 10, marginBottom: "1.5rem", flexWrap: "wrap" }}>
         <input value={search} onChange={e => { setSearch(e.target.value); trackCTA("search_input", "browse", currentUser?.id); }} placeholder="Search items…" style={{ flex: 1, minWidth: 180 }} />
         <select value={cat} onChange={e => { setCat(e.target.value); trackCTA(`filter_category_${e.target.value}`, "browse", currentUser?.id); }} style={{ minWidth: 140 }}>
@@ -361,22 +553,14 @@ function BrowsePage({ listings, users, comments, onNavigate, currentUser, onTogg
       <p style={{ margin: "0 0 1rem", fontSize: 13, color: "#6b7280" }}>{filtered.length} listing{filtered.length !== 1 ? "s" : ""} found</p>
       {filtered.length === 0
         ? <div style={{ textAlign: "center", padding: "4rem 0", color: "#6b7280" }}>No listings found.</div>
-        : (
-          <>
-            <div onScroll={e => loadMoreOnScroll(e, hasMoreListings, () => setVisibleCount(c => Math.min(c + POST_PAGE_SIZE, filtered.length)))} style={{ maxHeight: "74vh", overflowY: "auto", paddingRight: 2 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
-                {visibleListings.map(l => <ListingCard key={l.id} listing={l} users={users} comments={comments} page="browse" currentUser={currentUser} onClick={() => onNavigate("item", l.id)} onOpenComments={() => onNavigate("discussion", l.id)} onToggleLike={onToggleLike} onToggleFollow={onToggleFollow} />)}
-              </div>
-              {hasMoreListings && <div style={{ textAlign: "center", padding: "16px 0 4px", color: "#6b7280", fontSize: 12 }}>Scroll for more posts</div>}
-            </div>
-            <p style={{ margin: "10px 0 0", color: "#9ca3af", fontSize: 12 }}>Showing {visibleListings.length} of {filtered.length} posts</p>
-          </>
-        )}
+        : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
+            {filtered.map(l => <ListingCard key={l.id} listing={l} users={users} page="browse" currentUser={currentUser} onClick={() => onNavigate("item", l.id)} />)}
+          </div>}
     </div>
   );
 }
 
-function PostItemPage({ user, users, onPosted, onNavigate }) {
+function PostItemPage({ user, onPosted, onNavigate }) {
   const [form, setForm] = useState({ title: "", description: "", category: "", wantInReturn: "" });
   const [image, setImage] = useState(null), [preview, setPreview] = useState(null);
   const [err, setErr] = useState(""), [success, setSuccess] = useState(""), [loading, setLoading] = useState(false);
@@ -400,14 +584,8 @@ function PostItemPage({ user, users, onPosted, onNavigate }) {
     if (!form.title || !form.description || !form.category || !form.wantInReturn) { setErr("Please fill all required fields"); return; }
     setErr(""); setLoading(true);
     try {
-      const listing = await listingDb.create({ userId: user.id, title: form.title.trim(), description: form.description.trim(), category: form.category, wantInReturn: form.wantInReturn.trim(), imageBase64: image || null, status: "available", likedBy: [], likeCount: 0 });
-      const admins = users.filter(u => u.role === "admin" && u.id !== user.id);
-      const interestedUsers = users.filter(u => u.id !== user.id && u.role !== "admin" && (u.interests?.[form.category] || 0) > 0);
-      await Promise.all([
-        ...admins.map(admin => notificationDb.create({ userId: admin.id, actorId: user.id, actorNumber: user.userNumber || null, type: "admin_listing_added", title: "New listing added", message: `${user.username} posted ${form.title}`, listingId: listing.id })),
-        ...interestedUsers.map(target => notificationDb.create({ userId: target.id, actorId: user.id, actorNumber: user.userNumber || null, type: "interest_match", title: "New item in your interest", message: `${form.title} was posted in ${form.category}`, listingId: listing.id }))
-      ]);
-      trackEvent({ type: "listing_posted", label: form.title, page: "post", userId: user.id, extra: { userNumber: user.userNumber || null, listingId: listing.id, listingTitle: form.title, category: form.category } });
+      await listingDb.create({ userId: user.id, title: form.title.trim(), description: form.description.trim(), category: form.category, wantInReturn: form.wantInReturn.trim(), imageBase64: image || null, status: "available" });
+      trackEvent({ type: "listing_posted", label: form.title, page: "post", userId: user.id });
       setSuccess("Your item has been posted successfully!");
       setForm({ title: "", description: "", category: "", wantInReturn: "" }); setImage(null); setPreview(null);
       if (fileRef.current) fileRef.current.value = "";
@@ -464,15 +642,12 @@ function PostItemPage({ user, users, onPosted, onNavigate }) {
   );
 }
 
-function ItemDetailPage({ listingId, listings, users, exchanges, comments, user, onNavigate, onRefresh, onToggleLike, onToggleFollow }) {
-  const mobile = useMediaQuery("(max-width: 760px)");
+function ItemDetailPage({ listingId, listings, users, exchanges, ratings, user, onNavigate, onRefresh, onReportCreated }) {
   const listing = listings.find(l => l.id === listingId);
   const [offerForm, setOfferForm] = useState({ title: "", description: "" });
   const [offerImage, setOfferImage] = useState(null);
-  const [commentText, setCommentText] = useState("");
-  const [replyingTo, setReplyingTo] = useState(null);
-  const [replyText, setReplyText] = useState("");
   const [err, setErr] = useState(""), [success, setSuccess] = useState(""), [loading, setLoading] = useState(false), [showOffer, setShowOffer] = useState(false);
+  const [showReport, setShowReport] = useState(false);
   const fileRef = useRef();
 
   if (!listing) return (
@@ -486,11 +661,8 @@ function ItemDetailPage({ listingId, listings, users, exchanges, comments, user,
   const isOwner = user && user.id === listing.userId;
   const itemExchanges = exchanges.filter(e => e.listingId === listing.id);
   const myOffer = user && itemExchanges.find(e => e.offererId === user.id);
-  const liked = user && Array.isArray(listing.likedBy) && listing.likedBy.includes(user.id);
-  const followsOwner = user && Array.isArray(user.following) && user.following.includes(listing.userId);
-  const itemComments = comments.filter(c => c.listingId === listing.id && c.active !== false);
-  const topComments = itemComments.filter(c => !c.parentId);
-  const repliesFor = (commentId) => itemComments.filter(c => c.parentId === commentId);
+  const productScore = avgRating(ratings.filter(r => r.listingId === listing.id), r => r.productRating);
+  const ownerScore = owner && avgRating(ratings.filter(r => r.targetUserId === owner.id), r => r.userRating);
 
   async function handleOfferImage(e) {
     const file = e.target.files[0]; if (!file) return;
@@ -503,115 +675,22 @@ function ItemDetailPage({ listingId, listings, users, exchanges, comments, user,
     if (!offerForm.title || !offerForm.description) { setErr("Fill all offer fields"); return; }
     setErr(""); setLoading(true);
     try {
-      const exchange = await exchangeDb.create({
-        listingId: listing.id,
-        listingTitle: listing.title,
-        ownerId: listing.userId,
-        offererId: user.id,
-        offererNumber: user.userNumber || null,
-        offerTitle: offerForm.title,
-        offerDescription: offerForm.description,
-        offerImage: offerImage || null,
-        status: "pending"
-      });
+      await exchangeDb.create({ listingId: listing.id, offererId: user.id, offerTitle: offerForm.title, offerDescription: offerForm.description, offerImage: offerImage || null, status: "pending" });
       await listingDb.update(listing.id, { status: "pending" });
-      await notificationDb.create({
-        userId: listing.userId,
-        actorId: user.id,
-        actorNumber: user.userNumber || null,
-        type: "offer_received",
-        title: "New offer received",
-        message: `${user.username} offered ${offerForm.title} for ${listing.title}`,
-        listingId: listing.id,
-        exchangeId: exchange.id,
-      });
-      await Promise.all(users.filter(u => u.role === "admin" && u.id !== user.id).map(admin => notificationDb.create({
-        userId: admin.id,
-        actorId: user.id,
-        actorNumber: user.userNumber || null,
-        type: "admin_offer_added",
-        title: "New offer added",
-        message: `${user.username} offered ${offerForm.title} for ${listing.title}`,
-        listingId: listing.id,
-        exchangeId: exchange.id,
-      })));
-      trackEvent({ type: "offer_submitted", label: offerForm.title, page: "item", userId: user.id, extra: { userNumber: user.userNumber, listingId: listing.id, listingTitle: listing.title, exchangeId: exchange.id } });
+      trackEvent({ type: "offer_submitted", label: offerForm.title, page: "item", userId: user.id, extra: { listingId: listing.id } });
       setSuccess("Offer submitted!"); setShowOffer(false); setOfferForm({ title: "", description: "" }); setOfferImage(null); onRefresh();
     } catch (e) { setErr(e.message); } finally { setLoading(false); }
   }
 
   async function updateExchangeStatus(exId, status) {
-    const exchange = itemExchanges.find(e => e.id === exId);
-    await exchangeDb.update(exId, { status, statusSeenByOfferer: false });
-    if (status === "accepted") await listingDb.update(listing.id, { status: "exchanged" });
-    if (exchange) {
-      await notificationDb.create({
-        userId: exchange.offererId,
-        actorId: user.id,
-        actorNumber: user.userNumber || null,
-        type: `offer_${status}`,
-        title: `Offer ${status}`,
-        message: `Your offer for ${listing.title} was ${status}`,
-        listingId: listing.id,
-        exchangeId: exId,
-      });
-      await Promise.all(users.filter(u => u.role === "admin" && u.id !== user.id).map(admin => notificationDb.create({
-        userId: admin.id,
-        actorId: user.id,
-        actorNumber: user.userNumber || null,
-        type: `admin_offer_${status}`,
-        title: `Offer ${status}`,
-        message: `${user.username} ${status} an offer for ${listing.title}`,
-        listingId: listing.id,
-        exchangeId: exId,
-      })));
-      trackEvent({ type: `offer_${status}`, label: listing.title, page: "item", userId: user.id, extra: { userNumber: user.userNumber, listingId: listing.id, exchangeId: exId, targetUserId: exchange.offererId } });
+    const ex = itemExchanges.find(x => x.id === exId);
+    await exchangeDb.update(exId, { status });
+    if (status === "accepted") {
+      await listingDb.update(listing.id, { status: "exchanged" });
+      await chatDb.ensureThreadForExchange(ex, { ...listing, ownerUsername: owner?.username });
     }
     onRefresh();
   }
-
-  async function submitComment(e, parentId = null) {
-    e.preventDefault();
-    if (!user) { onNavigate("login"); return; }
-    const text = (parentId ? replyText : commentText).trim();
-    if (!text) return;
-    const comment = await commentDb.create({
-      listingId: listing.id,
-      parentId,
-      userId: user.id,
-      userNumber: user.userNumber || null,
-      username: user.username,
-      text,
-    });
-    const notifyUserIds = new Set([listing.userId]);
-    if (parentId) {
-      const parent = itemComments.find(c => c.id === parentId);
-      if (parent?.userId) notifyUserIds.add(parent.userId);
-    }
-    notifyUserIds.delete(user.id);
-    await Promise.all([...notifyUserIds].map(targetId => notificationDb.create({
-      userId: targetId,
-      actorId: user.id,
-      actorNumber: user.userNumber || null,
-      type: parentId ? "reply_added" : "comment_added",
-      title: parentId ? "New reply" : "New comment",
-      message: `${user.username} ${parentId ? "replied on" : "commented on"} ${listing.title}`,
-      listingId: listing.id,
-      commentId: comment.id,
-    })));
-    trackEvent({ type: parentId ? "reply_added" : "comment_added", label: listing.title, page: "item", userId: user.id, extra: { userNumber: user.userNumber, listingId: listing.id, commentId: comment.id } });
-    setCommentText("");
-    setReplyText("");
-    setReplyingTo(null);
-    onRefresh(user.id);
-  }
-
-  useEffect(() => {
-    if (isOwner && itemExchanges.some(e => e.seenByOwner === false)) {
-      exchangeDb.markListingSeen(listing.id, user.id);
-      notificationDb.markListingRead(user.id, listing.id);
-    }
-  }, [isOwner, listing.id, user?.id, itemExchanges.length]);
 
   async function deleteListing() {
     if (!confirm("Delete this listing?")) return;
@@ -619,13 +698,29 @@ function ItemDetailPage({ listingId, listings, users, exchanges, comments, user,
     onNavigate("browse");
   }
 
+  async function submitReport(data) {
+    if (!user) { onNavigate("login"); return; }
+    await reportDb.create({
+      type: "listing",
+      reporterId: user.id,
+      listingId: listing.id,
+      listingTitle: listing.title,
+      reportedUserId: listing.userId,
+      reason: data.reason,
+      details: data.details,
+    });
+    setShowReport(false);
+    setSuccess("Report submitted for admin review.");
+    await onReportCreated?.();
+  }
+
   return (
     <div style={{ maxWidth: 860, margin: "2rem auto", padding: "0 1rem" }}>
       <button onClick={() => onNavigate("browse")} style={{ background: "none", border: "none", color: "#6b7280", cursor: "pointer", marginBottom: "1rem", fontSize: 14 }}>← Back to browse</button>
       <Alert type="error" msg={err} onClose={() => setErr("")} />
       <Alert type="success" msg={success} onClose={() => setSuccess("")} />
-      <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: mobile ? 16 : 24, marginBottom: 24 }}>
-        <div style={{ background: "#f9fafb", borderRadius: 12, overflow: "hidden", minHeight: mobile ? 220 : 280, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div className="detail-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
+        <div style={{ background: "#f9fafb", borderRadius: 12, overflow: "hidden", minHeight: 280, display: "flex", alignItems: "center", justifyContent: "center" }}>
           {listing.imageBase64
             ? <img src={listing.imageBase64} alt={listing.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             : <span style={{ fontSize: 64, color: "#9ca3af" }}>📦</span>}
@@ -635,23 +730,12 @@ function ItemDetailPage({ listingId, listings, users, exchanges, comments, user,
             <h1 style={{ margin: 0, fontSize: 22, fontWeight: 500, fontFamily: "Georgia, serif", flex: 1 }}>{listing.title}</h1>
             <Badge status={listing.status} />
           </div>
-          <p style={{ fontSize: 13, color: "#6b7280", marginBottom: 12 }}>{listing.category} · by <strong>{owner?.username || "Unknown"}</strong> <span style={{ color: "#9ca3af" }}>#{userNumber(owner)}</span> · {timeAgo(listing.createdAt)}</p>
-          {user && owner && owner.id !== user.id && (
-            <button onClick={() => onToggleFollow?.(owner)} style={{ marginBottom: 12, padding: "7px 12px", background: followsOwner ? "#111827" : "#eef2ff", color: followsOwner ? "#fff" : "#3730a3", border: "none", borderRadius: 999, fontSize: 13 }}>
-              {followsOwner ? "Following" : `Follow ${owner.username}`}
-            </button>
-          )}
+          <p style={{ fontSize: 13, color: "#6b7280", marginBottom: 8 }}>{listing.category} · by <strong>{owner?.username || "Unknown"}</strong> · {timeAgo(listing.createdAt)}</p>
+          <p style={{ fontSize: 12, color: "#6b7280", margin: "0 0 12px" }}>Product {productScore ? productScore.toFixed(1) : "not rated"} · Seller genuine score {ownerScore ? ownerScore.toFixed(1) : "not rated"}</p>
           <p style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 16 }}>{listing.description}</p>
           <div style={{ background: "#fffbeb", border: "0.5px solid #fbbf24", borderRadius: 8, padding: "10px 12px", marginBottom: 16 }}>
             <p style={{ margin: 0, fontSize: 13, color: "#92400e" }}><strong>Looking for:</strong> {listing.wantInReturn}</p>
           </div>
-          <button
-            onClick={() => onToggleLike?.(listing)}
-            className={liked ? "like-pop" : ""}
-            style={{ marginBottom: 16, padding: "9px 14px", background: liked ? "#fee2e2" : "#fff", color: liked ? "#dc2626" : "#374151", border: "0.5px solid #e5e7eb", borderRadius: 999, cursor: "pointer", fontSize: 14, fontWeight: 500 }}
-          >
-            {liked ? "♥ Liked" : "♡ Like"} · {listing.likeCount || listing.likedBy?.length || 0}
-          </button>
 
           {isOwner ? (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -678,19 +762,18 @@ function ItemDetailPage({ listingId, listings, users, exchanges, comments, user,
               Make an offer
             </button>
           ) : myOffer ? (
-            <div style={{ padding: "10px 12px", background: myOffer.status === "declined" ? "#fef2f2" : "#eff6ff", borderRadius: 8, fontSize: 13, color: myOffer.status === "declined" ? "#991b1b" : "#2563eb" }}>
+            <div style={{ padding: "10px 12px", background: "#eff6ff", borderRadius: 8, fontSize: 13, color: "#2563eb" }}>
               Your offer is <strong>{myOffer.status}</strong>
-              {myOffer.status === "declined" && (
-                <p style={{ margin: "6px 0 0", color: "#7f1d1d", lineHeight: 1.45 }}>
-                  This offer was declined by the post owner. You cannot send another offer for this same item.
-                </p>
-              )}
             </div>
           ) : (
             <div style={{ padding: "10px 12px", background: "#f9fafb", borderRadius: 8, fontSize: 13, color: "#6b7280" }}>
               This item is no longer available for offers.
             </div>
           )}
+          {!isOwner && (
+            <button onClick={() => user ? setShowReport(true) : onNavigate("login")} style={{ marginTop: 10, padding: "8px 12px", background: "#fff", color: "#dc2626", border: "0.5px solid #fca5a5", borderRadius: 8, fontSize: 13 }}>Report listing</button>
+          )}
+          {showReport && <ReportBox title="Report this listing" onSubmit={submitReport} onCancel={() => setShowReport(false)} />}
         </div>
       </div>
 
@@ -726,18 +809,26 @@ function ItemDetailPage({ listingId, listings, users, exchanges, comments, user,
           <h3 style={{ fontSize: 16, fontWeight: 500, marginBottom: 12 }}>Offers received ({itemExchanges.length})</h3>
           {itemExchanges.map(ex => {
             const offerer = users.find(u => u.id === ex.offererId);
+            const targetUser = offerer;
+            const existingRating = ratings.find(r => r.exchangeId === ex.id && r.raterId === user.id);
             return (
               <div key={ex.id} style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1rem", marginBottom: 10, display: "flex", gap: 12 }}>
                 {ex.offerImage && <img src={ex.offerImage} alt="" style={{ width: 80, height: 60, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} />}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, gap: 8 }}><strong style={{ fontSize: 14 }}>{ex.offerTitle}</strong><Badge status={ex.status} /></div>
                   <p style={{ margin: "0 0 4px", fontSize: 13, color: "#6b7280" }}>{ex.offerDescription}</p>
-                  <p style={{ margin: "0 0 8px", fontSize: 12, color: "#9ca3af" }}>by {offerer?.username} #{userNumber(offerer)} · {timeAgo(ex.createdAt)}</p>
+                  {ex.status === "accepted" && (
+                    <button onClick={() => onNavigate("chat", `exchange_${ex.id}`)} style={{ marginBottom: 6, padding: "5px 12px", background: "#111827", border: "none", color: "white", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>Open chat</button>
+                  )}
+                  <p style={{ margin: "0 0 8px", fontSize: 12, color: "#9ca3af" }}>by {offerer?.username} · {timeAgo(ex.createdAt)}</p>
                   {ex.status === "pending" && (
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={() => updateExchangeStatus(ex.id, "accepted")} style={{ padding: "5px 12px", background: "#d1fae5", border: "0.5px solid #6ee7b7", color: "#065f46", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>Accept</button>
                       <button onClick={() => updateExchangeStatus(ex.id, "declined")} style={{ padding: "5px 12px", background: "#fee2e2", border: "0.5px solid #fca5a5", color: "#991b1b", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>Decline</button>
                     </div>
+                  )}
+                  {ex.status === "accepted" && listing && (
+                    <RatingBox exchange={ex} listing={listing} user={user} targetUser={targetUser} existing={existingRating} onRated={onRefresh} />
                   )}
                 </div>
               </div>
@@ -745,156 +836,6 @@ function ItemDetailPage({ listingId, listings, users, exchanges, comments, user,
           })}
         </div>
       )}
-
-      <div style={{ marginTop: 24, background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: mobile ? "1rem" : "1.25rem" }}>
-        <h3 style={{ fontSize: 16, fontWeight: 500, margin: "0 0 12px" }}>Comments ({topComments.length})</h3>
-        <form onSubmit={submitComment} style={{ display: "flex", gap: 8, marginBottom: 16, flexDirection: mobile ? "column" : "row" }}>
-          <input value={commentText} onChange={e => setCommentText(e.target.value)} placeholder={user ? "Add a comment" : "Sign in to comment"} disabled={!user} style={{ flex: 1 }} />
-          <button type="submit" disabled={!user || !commentText.trim()} style={{ padding: "9px 14px", border: "none", borderRadius: 8, background: "#d97706", color: "#fff", opacity: !user || !commentText.trim() ? 0.6 : 1 }}>Post</button>
-        </form>
-        {topComments.length === 0 ? (
-          <p style={{ margin: 0, color: "#9ca3af", fontSize: 13 }}>No comments yet.</p>
-        ) : topComments.map(c => {
-          const author = users.find(u => u.id === c.userId);
-          const replies = repliesFor(c.id);
-          return (
-            <div key={c.id} style={{ borderTop: "0.5px solid #f3f4f6", paddingTop: 12, marginTop: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                <strong style={{ fontSize: 13 }}>{author?.username || c.username || "User"} <span style={{ color: "#9ca3af", fontWeight: 400 }}>#{c.userNumber || userNumber(author)}</span></strong>
-                <span style={{ fontSize: 11, color: "#9ca3af" }}>{timeAgo(c.createdAt)}</span>
-              </div>
-              <p style={{ margin: "6px 0 8px", fontSize: 14, color: "#374151", lineHeight: 1.5 }}>{c.text}</p>
-              {user && <button onClick={() => setReplyingTo(replyingTo === c.id ? null : c.id)} style={{ border: "none", background: "none", color: "#d97706", padding: 0, fontSize: 12 }}>Reply</button>}
-              {replyingTo === c.id && (
-                <form onSubmit={e => submitComment(e, c.id)} style={{ display: "flex", gap: 8, marginTop: 8, flexDirection: mobile ? "column" : "row" }}>
-                  <input value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write a reply" style={{ flex: 1 }} />
-                  <button type="submit" disabled={!replyText.trim()} style={{ padding: "8px 12px", border: "none", borderRadius: 8, background: "#111827", color: "#fff", opacity: !replyText.trim() ? 0.6 : 1 }}>Reply</button>
-                </form>
-              )}
-              {replies.length > 0 && (
-                <div style={{ marginTop: 10, marginLeft: mobile ? 12 : 24, paddingLeft: 12, borderLeft: "2px solid #f3f4f6" }}>
-                  {replies.map(r => {
-                    const replyAuthor = users.find(u => u.id === r.userId);
-                    return (
-                      <div key={r.id} style={{ marginBottom: 10 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                          <strong style={{ fontSize: 12 }}>{replyAuthor?.username || r.username || "User"} <span style={{ color: "#9ca3af", fontWeight: 400 }}>#{r.userNumber || userNumber(replyAuthor)}</span></strong>
-                          <span style={{ fontSize: 11, color: "#9ca3af" }}>{timeAgo(r.createdAt)}</span>
-                        </div>
-                        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#374151" }}>{r.text}</p>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function DiscussionPage({ listingId, listings, users, comments, user, onNavigate, onRefresh }) {
-  const mobile = useMediaQuery("(max-width: 760px)");
-  const listing = listings.find(l => l.id === listingId);
-  const [commentText, setCommentText] = useState("");
-  const [replyingTo, setReplyingTo] = useState(null);
-  const [replyText, setReplyText] = useState("");
-
-  if (!listing) return (
-    <div style={{ textAlign: "center", padding: "4rem" }}>
-      <p>Discussion not found.</p>
-      <button onClick={() => onNavigate("browse")} style={{ color: "#0079d3", background: "none", border: "none", cursor: "pointer" }}>Back to feed</button>
-    </div>
-  );
-
-  const itemComments = comments.filter(c => c.listingId === listing.id && c.active !== false);
-  const topComments = itemComments.filter(c => !c.parentId);
-  const repliesFor = (commentId) => itemComments.filter(c => c.parentId === commentId);
-
-  async function submitComment(e, parentId = null) {
-    e.preventDefault();
-    if (!user) { onNavigate("login"); return; }
-    const text = (parentId ? replyText : commentText).trim();
-    if (!text) return;
-    const comment = await commentDb.create({
-      listingId: listing.id,
-      parentId,
-      userId: user.id,
-      userNumber: user.userNumber || null,
-      username: user.username,
-      text,
-    });
-    const notifyUserIds = new Set([listing.userId]);
-    if (parentId) {
-      const parent = itemComments.find(c => c.id === parentId);
-      if (parent?.userId) notifyUserIds.add(parent.userId);
-    }
-    notifyUserIds.delete(user.id);
-    await Promise.all([...notifyUserIds].map(targetId => notificationDb.create({
-      userId: targetId,
-      actorId: user.id,
-      actorNumber: user.userNumber || null,
-      type: parentId ? "reply_added" : "comment_added",
-      title: parentId ? "New reply" : "New comment",
-      message: `${user.username} ${parentId ? "replied on" : "commented on"} ${listing.title}`,
-      listingId: listing.id,
-      commentId: comment.id,
-    })));
-    setCommentText("");
-    setReplyText("");
-    setReplyingTo(null);
-    onRefresh(user.id);
-  }
-
-  return (
-    <div style={{ maxWidth: 760, margin: "2rem auto", padding: "0 1rem" }}>
-      <button onClick={() => onNavigate("item", listing.id)} style={{ background: "none", border: "none", color: "#6b7280", cursor: "pointer", marginBottom: 12 }}>Back to item</button>
-      <div style={{ background: "#fff", border: "0.5px solid #cfd6dc", borderRadius: 8, padding: mobile ? "1rem" : "1.25rem" }}>
-        <p style={{ margin: "0 0 6px", color: "#6b7280", fontSize: 12 }}>{listing.category} discussion</p>
-        <h1 style={{ margin: "0 0 16px", fontSize: 22 }}>{listing.title}</h1>
-        <form onSubmit={submitComment} style={{ display: "flex", gap: 8, marginBottom: 16, flexDirection: mobile ? "column" : "row" }}>
-          <input value={commentText} onChange={e => setCommentText(e.target.value)} placeholder={user ? "Add to the discussion" : "Sign in to comment"} disabled={!user} style={{ flex: 1 }} />
-          <button type="submit" disabled={!user || !commentText.trim()} style={{ padding: "9px 14px", border: "none", borderRadius: 999, background: "#ff4500", color: "#fff", opacity: !user || !commentText.trim() ? 0.6 : 1 }}>Comment</button>
-        </form>
-        {topComments.length === 0 ? <p style={{ color: "#9ca3af", fontSize: 13 }}>No comments yet.</p> : topComments.map(c => {
-          const author = users.find(u => u.id === c.userId);
-          const replies = repliesFor(c.id);
-          return (
-            <div key={c.id} style={{ borderTop: "0.5px solid #e5e7eb", paddingTop: 12, marginTop: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                <strong style={{ fontSize: 13 }}>{author?.username || c.username || "User"} <span style={{ color: "#9ca3af", fontWeight: 400 }}>#{c.userNumber || userNumber(author)}</span></strong>
-                <span style={{ fontSize: 11, color: "#9ca3af" }}>{timeAgo(c.createdAt)}</span>
-              </div>
-              <p style={{ margin: "6px 0 8px", fontSize: 14, color: "#374151", lineHeight: 1.5 }}>{c.text}</p>
-              {user && <button onClick={() => setReplyingTo(replyingTo === c.id ? null : c.id)} style={{ border: "none", background: "none", color: "#0079d3", padding: 0, fontSize: 12 }}>Reply</button>}
-              {replyingTo === c.id && (
-                <form onSubmit={e => submitComment(e, c.id)} style={{ display: "flex", gap: 8, marginTop: 8, flexDirection: mobile ? "column" : "row" }}>
-                  <input value={replyText} onChange={e => setReplyText(e.target.value)} placeholder="Write a reply" style={{ flex: 1 }} />
-                  <button type="submit" disabled={!replyText.trim()} style={{ padding: "8px 12px", border: "none", borderRadius: 999, background: "#0079d3", color: "#fff", opacity: !replyText.trim() ? 0.6 : 1 }}>Reply</button>
-                </form>
-              )}
-              {replies.length > 0 && (
-                <div style={{ marginTop: 10, marginLeft: mobile ? 12 : 24, paddingLeft: 12, borderLeft: "2px solid #eef2f7" }}>
-                  {replies.map(r => {
-                    const replyAuthor = users.find(u => u.id === r.userId);
-                    return (
-                      <div key={r.id} style={{ marginBottom: 10 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                          <strong style={{ fontSize: 12 }}>{replyAuthor?.username || r.username || "User"} <span style={{ color: "#9ca3af", fontWeight: 400 }}>#{r.userNumber || userNumber(replyAuthor)}</span></strong>
-                          <span style={{ fontSize: 11, color: "#9ca3af" }}>{timeAgo(r.createdAt)}</span>
-                        </div>
-                        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#374151" }}>{r.text}</p>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -914,7 +855,6 @@ function MyListingsPage({ user, listings, exchanges, onNavigate, onRefresh }) {
         : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
             {myListings.map(l => {
               const exCount = exchanges.filter(e => e.listingId === l.id).length;
-              const unreadCount = exchanges.filter(e => e.listingId === l.id && e.seenByOwner === false).length;
               return (
                 <div key={l.id} style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, overflow: "hidden" }}>
                   <div style={{ height: 150, background: "#f9fafb", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
@@ -922,7 +862,7 @@ function MyListingsPage({ user, listings, exchanges, onNavigate, onRefresh }) {
                   </div>
                   <div style={{ padding: "10px 12px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, gap: 6 }}><h3 style={{ margin: 0, fontSize: 14, fontWeight: 500, flex: 1 }}>{l.title}</h3><Badge status={l.status} /></div>
-                    <p style={{ margin: "0 0 8px", fontSize: 12, color: unreadCount ? "#dc2626" : "#6b7280", display: "flex", alignItems: "center", gap: 6 }}><RedDot show={unreadCount > 0} />{exCount} offer{exCount !== 1 ? "s" : ""}{unreadCount > 0 ? `, ${unreadCount} new` : ""}</p>
+                    <p style={{ margin: "0 0 8px", fontSize: 12, color: "#6b7280" }}>{exCount} offer{exCount !== 1 ? "s" : ""}</p>
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={() => onNavigate("item", l.id)} style={{ flex: 1, padding: "6px", fontSize: 12, borderRadius: 8, border: "0.5px solid #e5e7eb", background: "#f9fafb", cursor: "pointer" }}>View & offers</button>
                       <button onClick={async () => { if (!confirm("Delete?")) return; await listingDb.delete(l.id); onRefresh(); }} style={{ padding: "6px 10px", fontSize: 12, borderRadius: 8, border: "0.5px solid #fca5a5", background: "#fee2e2", color: "#991b1b", cursor: "pointer" }}>Del</button>
@@ -936,14 +876,9 @@ function MyListingsPage({ user, listings, exchanges, onNavigate, onRefresh }) {
   );
 }
 
-function MyExchangesPage({ user, listings, exchanges, users, onNavigate }) {
-  const myOffers = user ? exchanges.filter(e => e.offererId === user.id) : [];
-  useEffect(() => {
-    if (user && myOffers.some(e => e.status !== "pending" && e.statusSeenByOfferer === false)) {
-      exchangeDb.markOffererStatusSeen(user.id);
-    }
-  }, [user?.id, myOffers.length]);
+function MyExchangesPage({ user, listings, exchanges, users, ratings, onNavigate, onRated }) {
   if (!user) return <div style={{ textAlign: "center", padding: "4rem" }}><button onClick={() => onNavigate("login")} style={{ color: "#d97706", background: "none", border: "none", cursor: "pointer" }}>Sign in →</button></div>;
+  const myOffers = exchanges.filter(e => e.offererId === user.id);
   return (
     <div style={{ maxWidth: 800, margin: "2rem auto", padding: "0 1rem" }}>
       <h1 style={{ fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif", marginBottom: "1.5rem" }}>My exchange offers ({myOffers.length})</h1>
@@ -952,16 +887,16 @@ function MyExchangesPage({ user, listings, exchanges, users, onNavigate }) {
         : myOffers.map(ex => {
             const listing = listings.find(l => l.id === ex.listingId);
             const lo = listing && users.find(u => u.id === listing.userId);
+            const targetUser = listing?.userId === user.id ? users.find(u => u.id === ex.offererId) : lo;
+            const existingRating = ratings.find(r => r.exchangeId === ex.id && r.raterId === user.id);
             return (
               <div key={ex.id} style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1rem", marginBottom: 10, display: "flex", gap: 12 }}>
                 {ex.offerImage && <img src={ex.offerImage} alt="" style={{ width: 80, height: 60, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} />}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}><span style={{ fontSize: 14, fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}><RedDot show={ex.status !== "pending" && ex.statusSeenByOfferer === false} />You offered: {ex.offerTitle}</span><Badge status={ex.status} /></div>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}><span style={{ fontSize: 14, fontWeight: 500 }}>You offered: {ex.offerTitle}</span><Badge status={ex.status} /></div>
                   <p style={{ margin: "0 0 4px", fontSize: 13, color: "#6b7280" }}>{ex.offerDescription}</p>
-                  {ex.status === "declined" && (
-                    <p style={{ margin: "0 0 6px", fontSize: 12, color: "#991b1b", background: "#fef2f2", border: "0.5px solid #fecaca", borderRadius: 8, padding: "7px 9px" }}>
-                      Declined by the post owner. You cannot send another offer for this same item.
-                    </p>
+                  {ex.status === "accepted" && listing && (
+                    <RatingBox exchange={ex} listing={listing} user={user} targetUser={targetUser} existing={existingRating} onRated={onRated} />
                   )}
                   <p style={{ margin: 0, fontSize: 12, color: "#9ca3af" }}>For: <button onClick={() => listing && onNavigate("item", listing.id)} style={{ background: "none", border: "none", color: "#d97706", cursor: "pointer", fontSize: 12, padding: 0 }}>{listing?.title || "Deleted listing"}</button>{lo && ` by ${lo.username}`} · {timeAgo(ex.createdAt)}</p>
                 </div>
@@ -972,153 +907,245 @@ function MyExchangesPage({ user, listings, exchanges, users, onNavigate }) {
   );
 }
 
-function SocialStatButton({ label, value, onClick }) {
-  return (
-    <button onClick={onClick} style={{ flex: 1, minWidth: 96, border: "0.5px solid #e5e7eb", background: "#f9fafb", borderRadius: 8, padding: "10px 8px", cursor: "pointer", textAlign: "center" }}>
-      <strong style={{ display: "block", fontSize: 18, color: "#111827" }}>{value}</strong>
-      <span style={{ display: "block", fontSize: 12, color: "#6b7280" }}>{label}</span>
-    </button>
-  );
-}
+function ChatsPage({ user, users, listings, exchanges, selectedThreadId, onNavigate, onUserUpdate }) {
+  const [threads, setThreads] = useState([]);
+  const [thread, setThread] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [plainMessages, setPlainMessages] = useState([]);
+  const [text, setText] = useState("");
+  const [err, setErr] = useState("");
+  const [sending, setSending] = useState(false);
+  const [dailyCount, setDailyCount] = useState(0);
+  const [editing, setEditing] = useState(null);
+  const scrollRef = useRef(null);
+  const typingTimer = useRef(null);
 
-function UserPostFeed({ posts, users, comments, currentUser, onNavigate, onToggleLike, onToggleFollow }) {
-  const [visibleCount, setVisibleCount] = useState(POST_PAGE_SIZE);
-  const visiblePosts = posts.slice(0, visibleCount);
-  const hasMorePosts = visibleCount < posts.length;
   useEffect(() => {
-    setVisibleCount(POST_PAGE_SIZE);
-  }, [posts.length, currentUser?.id]);
-  if (posts.length === 0) {
-    return <div style={{ background: "#fff", border: "0.5px solid #e5e7eb", borderRadius: 8, padding: "2.5rem 1rem", textAlign: "center", color: "#6b7280" }}>No posts yet.</div>;
+    if (!user) return;
+    chatDb.getThreadsForUser(user.id).then(setThreads);
+  }, [user, selectedThreadId]);
+
+  useEffect(() => {
+    if (!selectedThreadId) {
+      setThread(null);
+      setMessages([]);
+      return undefined;
+    }
+    const unsubThread = chatDb.subscribeThread(selectedThreadId, setThread);
+    const unsubMessages = chatDb.subscribeMessages(selectedThreadId, setMessages);
+    return () => {
+      unsubThread();
+      unsubMessages();
+      if (user) chatDb.setTyping(selectedThreadId, user.id, false);
+    };
+  }, [selectedThreadId, user?.id]);
+
+  useEffect(() => {
+    if (!user) return;
+    const today = new Date().toISOString().slice(0, 10);
+    setDailyCount(user.chatDailyDate === today ? Number(user.chatMessageCountToday) || 0 : 0);
+  }, [user?.id, user?.chatDailyDate, user?.chatMessageCountToday]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      if (!thread) {
+        setPlainMessages([]);
+        return;
+      }
+      const decrypted = await Promise.all(messages.map(async m => ({ ...m, plain: await decryptChatText(m, thread) })));
+      if (!cancelled) setPlainMessages(decrypted);
+    }
+    run();
+    return () => { cancelled = true; };
+  }, [messages, thread]);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [plainMessages.length]);
+
+  if (!user) return <div style={{ textAlign: "center", padding: "4rem" }}><button onClick={() => onNavigate("login")} style={{ color: "#d97706", background: "none", border: "none", cursor: "pointer" }}>Sign in to chat</button></div>;
+  if (!user.chatTermsAcceptedAt) return <ChatTermsGate user={user} onAccept={onUserUpdate} onDecline={() => onNavigate("home")} />;
+
+  const acceptedThreads = exchanges
+    .filter(ex => ex.status === "accepted")
+    .map(ex => {
+      const listing = listings.find(l => l.id === ex.listingId);
+      if (!listing) return null;
+      if (listing.userId !== user.id && ex.offererId !== user.id) return null;
+      const otherId = listing.userId === user.id ? ex.offererId : listing.userId;
+      const other = users.find(u => u.id === otherId);
+      return { id: `exchange_${ex.id}`, exchange: ex, listing, other };
+    })
+    .filter(Boolean);
+
+  const active = thread || threads.find(t => t.id === selectedThreadId);
+  const listing = active && listings.find(l => l.id === active.listingId);
+  const otherId = active?.participants?.find(id => id !== user.id);
+  const other = users.find(u => u.id === otherId);
+  const otherTypingAt = active?.typing?.[otherId];
+  const otherIsTyping = otherTypingAt && Date.now() - new Date(otherTypingAt).getTime() < 5000;
+  const blocked = dailyCount >= CHAT_DAILY_LIMIT;
+
+  async function ensureAndOpen(item) {
+    await chatDb.ensureThreadForExchange(item.exchange, { ...item.listing, ownerUsername: users.find(u => u.id === item.listing.userId)?.username });
+    onNavigate("chat", item.id);
   }
-  return (
-    <div onScroll={e => loadMoreOnScroll(e, hasMorePosts, () => setVisibleCount(c => Math.min(c + POST_PAGE_SIZE, posts.length)))} style={{ maxHeight: 720, overflowY: "auto", paddingRight: 2 }}>
-      <div style={{ display: "grid", gap: 12 }}>
-        {visiblePosts.map(l => (
-          <ListingCard
-            key={l.id}
-            listing={l}
-            users={users}
-            comments={comments}
-            page="profile"
-            currentUser={currentUser}
-            onClick={() => onNavigate("item", l.id)}
-            onOpenComments={() => onNavigate("discussion", l.id)}
-            onToggleLike={onToggleLike}
-            onToggleFollow={onToggleFollow}
-          />
-        ))}
-      </div>
-      {hasMorePosts && <div style={{ textAlign: "center", padding: "14px 0 4px", color: "#6b7280", fontSize: 12 }}>Scroll for more posts</div>}
-    </div>
-  );
-}
 
-function SocialListPage({ pageParam, users, currentUser, onNavigate, onToggleFollow }) {
-  const mobile = useMediaQuery("(max-width: 640px)");
-  const profileUserId = typeof pageParam === "object" ? pageParam?.userId : currentUser?.id;
-  const type = typeof pageParam === "object" ? pageParam?.type : "followers";
-  const profileUser = users.find(u => u.id === profileUserId);
-  if (!profileUser) return (
-    <div style={{ textAlign: "center", padding: "4rem" }}>
-      <p>User not found.</p>
-      <button onClick={() => onNavigate("browse")} style={{ color: "#0079d3", background: "none", border: "none", cursor: "pointer" }}>Back to feed</button>
-    </div>
-  );
+  async function handleTyping(value) {
+    setText(value);
+    if (!selectedThreadId) return;
+    await chatDb.setTyping(selectedThreadId, user.id, Boolean(value.trim()));
+    clearTimeout(typingTimer.current);
+    typingTimer.current = setTimeout(() => chatDb.setTyping(selectedThreadId, user.id, false), 1800);
+  }
 
-  const followingIds = profileUser.following || [];
-  const list = type === "following"
-    ? followingIds.map(id => users.find(u => u.id === id)).filter(Boolean)
-    : users.filter(u => (u.following || []).includes(profileUser.id));
-  const title = type === "following" ? "Following" : "Followers";
+  async function send(e) {
+    e.preventDefault();
+    if (!thread || !text.trim() || (blocked && !editing)) return;
+    setErr("");
+    setSending(true);
+    try {
+      if (editing) {
+        if (Date.now() - new Date(editing.createdAt).getTime() > CHAT_EDIT_WINDOW_MS) {
+          setErr("Messages can only be edited within 15 minutes.");
+          return;
+        }
+        const encrypted = await encryptChatText(text.trim(), thread);
+        await chatDb.updateMessage(thread.id, editing.id, encrypted);
+        setText("");
+        setEditing(null);
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const currentCount = user.chatDailyDate === today ? Number(user.chatMessageCountToday) || 0 : 0;
+      if (currentCount >= CHAT_DAILY_LIMIT) {
+        setDailyCount(currentCount);
+        await userDb.update(user.id, { messageBlockedDay: today });
+        setErr("Daily chat limit reached. Messaging unlocks again tomorrow.");
+        return;
+      }
+      const encrypted = await encryptChatText(text.trim(), thread);
+      await chatDb.sendMessage(thread.id, { senderId: user.id, ...encrypted });
+      setText("");
+      await chatDb.setTyping(thread.id, user.id, false);
+      const nextCount = currentCount + 1;
+      const patch = { chatDailyDate: today, chatMessageCountToday: nextCount, messageBlockedDay: nextCount >= CHAT_DAILY_LIMIT ? today : null };
+      await userDb.update(user.id, patch);
+      setDailyCount(nextCount);
+      onUserUpdate?.({ ...user, ...patch });
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setSending(false);
+    }
+  }
 
-  return (
-    <div style={{ maxWidth: 720, margin: "2rem auto", padding: "0 1rem" }}>
-      <button onClick={() => onNavigate(profileUser.id === currentUser?.id ? "profile" : "user-profile", profileUser.id)} style={{ border: "none", background: "none", color: "#6b7280", cursor: "pointer", marginBottom: 12 }}>Back to profile</button>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
-        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>{title} of {profileUser.username}</h1>
-        <span style={{ fontSize: 12, color: "#6b7280" }}>#{userNumber(profileUser)}</span>
-      </div>
-      {list.length === 0 ? (
-        <div style={{ background: "#fff", border: "0.5px solid #e5e7eb", borderRadius: 8, padding: "3rem 1rem", textAlign: "center", color: "#6b7280" }}>No users here yet.</div>
-      ) : (
-        <div style={{ display: "grid", gap: 10, maxHeight: "70vh", overflowY: "auto" }}>
-          {list.map(u => {
-            const isSelf = u.id === currentUser?.id;
-            const follows = currentUser && (currentUser.following || []).includes(u.id);
-            return (
-              <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", border: "0.5px solid #e5e7eb", borderRadius: 8, padding: mobile ? "10px" : "12px 14px" }}>
-                <button onClick={() => onNavigate(isSelf ? "profile" : "user-profile", u.id)} style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0, border: "none", background: "none", cursor: "pointer", textAlign: "left" }}>
-                  <span style={{ width: 38, height: 38, borderRadius: "50%", background: "#ff4500", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 700, flexShrink: 0 }}>{u.username?.[0]?.toUpperCase()}</span>
-                  <span style={{ minWidth: 0 }}>
-                    <strong style={{ display: "block", fontSize: 14 }}>{u.username}</strong>
-                    <span style={{ display: "block", fontSize: 12, color: "#6b7280" }}>User ID #{userNumber(u)}</span>
-                  </span>
-                </button>
-                {!isSelf && currentUser && (
-                  <button onClick={() => onToggleFollow(u)} style={{ border: "none", background: follows ? "#111827" : "#eef2ff", color: follows ? "#fff" : "#3730a3", borderRadius: 999, padding: "7px 12px", fontSize: 12 }}>
-                    {follows ? "Following" : "Follow"}
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
+  async function deleteOwnMessage(message) {
+    if (!thread || message.senderId !== user.id) return;
+    if (Date.now() - new Date(message.createdAt).getTime() > CHAT_EDIT_WINDOW_MS) {
+      setErr("Messages can only be deleted within 15 minutes.");
+      return;
+    }
+    if (!confirm("Delete this message?")) return;
+    await chatDb.deleteMessage(thread.id, message.id);
+  }
 
-function UserProfilePage({ profileUserId, users, listings, comments, currentUser, onNavigate, onToggleLike, onToggleFollow }) {
-  const profileUser = users.find(u => u.id === profileUserId);
-  if (!profileUser) return (
-    <div style={{ textAlign: "center", padding: "4rem" }}>
-      <p>User not found.</p>
-      <button onClick={() => onNavigate("browse")} style={{ color: "#0079d3", background: "none", border: "none", cursor: "pointer" }}>Back to feed</button>
-    </div>
-  );
-  if (profileUser.id === currentUser?.id) return <ProfilePage user={currentUser} users={users} listings={listings} comments={comments} onNavigate={onNavigate} onToggleLike={onToggleLike} onToggleFollow={onToggleFollow} onLogout={() => {}} />;
-
-  const posts = listings.filter(l => l.userId === profileUser.id).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  const followers = users.filter(u => (u.following || []).includes(profileUser.id));
-  const followingCount = (profileUser.following || []).length;
-  const follows = currentUser && (currentUser.following || []).includes(profileUser.id);
+  async function reportMessage(message) {
+    if (!thread || !user || message.deleted) return;
+    const details = prompt("Tell admins what is wrong with this message");
+    if (!details) return;
+    await reportDb.create({
+      type: "message",
+      reporterId: user.id,
+      reportedUserId: message.senderId,
+      threadId: thread.id,
+      listingId: thread.listingId,
+      reason: "message_report",
+      details,
+      messageText: message.plain,
+      conversationSnapshot: plainMessages.slice(-30).map(m => ({
+        senderId: m.senderId,
+        senderName: users.find(u => u.id === m.senderId)?.username || "User",
+        text: m.plain,
+        createdAt: m.createdAt,
+        editedAt: m.editedAt || null,
+        deleted: Boolean(m.deleted),
+      })),
+    });
+    setErr("Message report submitted for admin review.");
+  }
 
   return (
-    <div style={{ maxWidth: 760, margin: "2rem auto", padding: "0 1rem" }}>
-      <button onClick={() => onNavigate("browse")} style={{ border: "none", background: "none", color: "#6b7280", cursor: "pointer", marginBottom: 12 }}>Back to feed</button>
-      <div style={{ background: "#fff", border: "0.5px solid #cfd6dc", borderRadius: 8, padding: "1.25rem", marginBottom: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
-          <div style={{ width: 56, height: 56, borderRadius: "50%", background: "#ff4500", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 800, flexShrink: 0 }}>{profileUser.username?.[0]?.toUpperCase()}</div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <h1 style={{ margin: "0 0 2px", fontSize: 22 }}>{profileUser.username}</h1>
-            <p style={{ margin: 0, color: "#6b7280", fontSize: 13 }}>User ID #{userNumber(profileUser)}</p>
-          </div>
-          {currentUser && (
-            <button onClick={() => onToggleFollow(profileUser)} style={{ border: "none", background: follows ? "#111827" : "#ff4500", color: "#fff", borderRadius: 999, padding: "8px 14px", fontSize: 13 }}>
-              {follows ? "Following" : "Follow"}
+    <div style={{ maxWidth: 1000, margin: "2rem auto", padding: "0 1rem" }}>
+      <h1 style={{ fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif", marginBottom: "1.5rem" }}>Chats</h1>
+      <div className="chat-grid" style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16 }}>
+        <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, overflow: "hidden" }}>
+          {acceptedThreads.length === 0 ? (
+            <p style={{ padding: "1rem", margin: 0, fontSize: 13, color: "#6b7280" }}>Accepted exchanges will appear here.</p>
+          ) : acceptedThreads.map(item => (
+            <button key={item.id} onClick={() => ensureAndOpen(item)} style={{ width: "100%", textAlign: "left", padding: "12px", background: selectedThreadId === item.id ? "#fffbeb" : "#fff", border: "none", borderBottom: "0.5px solid #f3f4f6", cursor: "pointer" }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.other?.username || "User"}</div>
+              <div style={{ fontSize: 12, color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.listing.title}</div>
             </button>
+          ))}
+        </div>
+
+        <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, minHeight: 560, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {!selectedThreadId ? (
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#6b7280", fontSize: 14 }}>Select a chat</div>
+          ) : (
+            <>
+              <div style={{ padding: "12px 14px", borderBottom: "0.5px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: 14, fontWeight: 500 }}>{other?.username || "User"} {otherIsTyping ? <span style={{ color: "#16a34a", fontSize: 12 }}>typing...</span> : null}</p>
+                  <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>{listing?.title || "Exchange chat"}</p>
+                </div>
+                <span style={{ fontSize: 11, color: blocked ? "#991b1b" : "#6b7280", background: blocked ? "#fee2e2" : "#f9fafb", borderRadius: 20, padding: "3px 8px" }}>{dailyCount}/{CHAT_DAILY_LIMIT} today</span>
+              </div>
+              <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: 14, background: "#f9fafb" }}>
+                {plainMessages.map(m => {
+                  const mine = m.senderId === user.id;
+                  return (
+                    <div key={m.id} style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start", marginBottom: 8 }}>
+                      <div style={{ maxWidth: "72%", background: mine ? "#d97706" : "#fff", color: mine ? "white" : "#111827", border: mine ? "none" : "0.5px solid #e5e7eb", borderRadius: 10, padding: "8px 10px" }}>
+                        <p style={{ margin: 0, fontSize: 14, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontStyle: m.deleted ? "italic" : "normal", opacity: m.deleted ? 0.8 : 1 }}>{m.plain}</p>
+                        <p style={{ margin: "3px 0 0", fontSize: 10, opacity: 0.7 }}>{timeAgo(m.createdAt)}{m.editedAt && !m.deleted ? " · edited" : ""}</p>
+                        {mine && !m.deleted && Date.now() - new Date(m.createdAt).getTime() <= CHAT_EDIT_WINDOW_MS && (
+                          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                            <button onClick={() => { setEditing(m); setText(m.plain); }} style={{ background: "none", border: "none", color: mine ? "white" : "#d97706", padding: 0, fontSize: 11 }}>Edit</button>
+                            <button onClick={() => deleteOwnMessage(m)} style={{ background: "none", border: "none", color: mine ? "white" : "#dc2626", padding: 0, fontSize: 11 }}>Delete</button>
+                          </div>
+                        )}
+                        {!mine && !m.deleted && (
+                          <button onClick={() => reportMessage(m)} style={{ marginTop: 4, background: "none", border: "none", color: "#dc2626", padding: 0, fontSize: 11 }}>Report</button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ padding: 12, borderTop: "0.5px solid #f3f4f6" }}>
+                <Alert type="error" msg={err || (blocked ? "Daily chat limit reached. Messaging unlocks again tomorrow." : "")} onClose={() => setErr("")} />
+                <form onSubmit={send} style={{ display: "flex", gap: 8 }}>
+                  <input value={text} onChange={e => handleTyping(e.target.value)} disabled={blocked && !editing} placeholder={editing ? "Edit your message" : blocked ? "Messaging locked for today" : "Type an encrypted message"} style={{ flex: 1 }} />
+                  {editing && <button type="button" onClick={() => { setEditing(null); setText(""); }} style={{ padding: "9px 12px", background: "#fff", color: "#374151", border: "0.5px solid #e5e7eb", borderRadius: 8 }}>Cancel</button>}
+                  <button type="submit" disabled={sending || (blocked && !editing) || !text.trim()} style={{ padding: "9px 16px", background: "#d97706", color: "white", border: "none", borderRadius: 8, opacity: sending || blocked ? 0.6 : 1 }}>{editing ? "Save" : "Send"}</button>
+                </form>
+              </div>
+            </>
           )}
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <SocialStatButton label="Posts" value={posts.length} onClick={() => {}} />
-          <SocialStatButton label="Followers" value={followers.length} onClick={() => onNavigate("social-list", { userId: profileUser.id, type: "followers" })} />
-          <SocialStatButton label="Following" value={followingCount} onClick={() => onNavigate("social-list", { userId: profileUser.id, type: "following" })} />
-        </div>
       </div>
-      <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>Posts</h2>
-      <UserPostFeed posts={posts} users={users} comments={comments} currentUser={currentUser} onNavigate={onNavigate} onToggleLike={onToggleLike} onToggleFollow={onToggleFollow} />
     </div>
   );
 }
 
-function ProfilePage({ user, users = [], listings = [], comments = [], onNavigate, onToggleLike, onToggleFollow, onLogout }) {
+function ProfilePage({ user, onLogout }) {
   const [form, setForm] = useState({ oldPw: "", newPw: "", confirm: "" });
   const [err, setErr] = useState(""), [success, setSuccess] = useState(""), [loading, setLoading] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
   if (!user) return null;
-  const posts = listings.filter(l => l.userId === user.id).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  const followers = users.filter(u => (u.following || []).includes(user.id));
-  const followingCount = (user.following || []).length;
   async function changePw(e) {
     e.preventDefault();
     if (form.newPw !== form.confirm) { setErr("Passwords don't match"); return; }
@@ -1128,31 +1155,30 @@ function ProfilePage({ user, users = [], listings = [], comments = [], onNavigat
     catch (e) { setErr(e.message); } finally { setLoading(false); }
   }
   return (
-    <div style={{ maxWidth: 760, margin: "2rem auto", padding: "0 1rem" }}>
+    <div style={{ maxWidth: 480, margin: "2rem auto", padding: "0 1rem" }}>
       <h1 style={{ fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif", marginBottom: "1.5rem" }}>Profile</h1>
-      <div style={{ background: "#fff", border: "0.5px solid #cfd6dc", borderRadius: 8, padding: "1.5rem", marginBottom: 14 }}>
+      <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1.5rem", marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
-          <div style={{ width: 52, height: 52, borderRadius: "50%", background: "#ff4500", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, fontWeight: 800, flexShrink: 0 }}>{user.username[0].toUpperCase()}</div>
+          <div style={{ width: 52, height: 52, borderRadius: "50%", background: "#d97706", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, fontWeight: 500, flexShrink: 0 }}>{user.username[0].toUpperCase()}</div>
           <div>
             <p style={{ margin: "0 0 2px", fontWeight: 500, fontSize: 16 }}>{user.username}</p>
             <p style={{ margin: "0 0 4px", fontSize: 13, color: "#6b7280" }}>{user.email}</p>
-            <p style={{ margin: "0 0 6px", fontSize: 12, color: "#9ca3af" }}>User ID #{userNumber(user)}</p>
             <span style={{ fontSize: 11, background: user.role === "admin" ? "#d97706" : "#f9fafb", color: user.role === "admin" ? "white" : "#6b7280", padding: "2px 8px", borderRadius: 20 }}>{user.role}</span>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "0 0 14px" }}>
-          <SocialStatButton label="Posts" value={posts.length} onClick={() => {}} />
-          <SocialStatButton label="Followers" value={followers.length} onClick={() => onNavigate("social-list", { userId: user.id, type: "followers" })} />
-          <SocialStatButton label="Following" value={followingCount} onClick={() => onNavigate("social-list", { userId: user.id, type: "following" })} />
+        <div style={{ marginBottom: 10, background: "#f9fafb", borderRadius: 8, padding: "8px 10px" }}>
+          <p style={{ margin: "0 0 2px", fontSize: 11, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 0 }}>Encrypted public ID</p>
+          <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "#374151" }}>{publicUserId(user)}</p>
         </div>
         <p style={{ margin: 0, fontSize: 12, color: "#9ca3af" }}>Member since {new Date(user.joined).toLocaleDateString()}</p>
       </div>
-      <div style={{ marginBottom: 14 }}>
-        <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>Your posts</h2>
-        <UserPostFeed posts={posts} users={users} comments={comments} currentUser={user} onNavigate={onNavigate} onToggleLike={onToggleLike} onToggleFollow={onToggleFollow} />
-      </div>
       <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1.5rem", marginBottom: 14 }}>
-        <h2 style={{ margin: "0 0 1rem", fontSize: 16, fontWeight: 500 }}>Change password</h2>
+        <button onClick={() => setShowSecurity(v => !v)} style={{ width: "100%", background: "none", border: "none", padding: 0, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 500 }}>Security</h2>
+          <span style={{ fontSize: 18, color: "#6b7280" }}>{showSecurity ? "-" : "+"}</span>
+        </button>
+        {showSecurity && (
+          <div style={{ marginTop: 16 }}>
         <Alert type="error" msg={err} onClose={() => setErr("")} />
         <Alert type="success" msg={success} onClose={() => setSuccess("")} />
         <form onSubmit={changePw}>
@@ -1164,40 +1190,10 @@ function ProfilePage({ user, users = [], listings = [], comments = [], onNavigat
           ))}
           <button type="submit" disabled={loading} style={{ padding: "8px 18px", background: "#d97706", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, opacity: loading ? 0.7 : 1 }}>{loading ? "Updating…" : "Update password"}</button>
         </form>
+          </div>
+        )}
       </div>
       <button onClick={onLogout} style={{ width: "100%", padding: "11px", background: "#fee2e2", color: "#991b1b", border: "0.5px solid #fca5a5", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 500 }}>Sign out</button>
-    </div>
-  );
-}
-
-function NotificationsPage({ user, notifications, onNavigate, onMarkAllRead }) {
-  useEffect(() => {
-    if (user && notifications.some(n => !n.read)) onMarkAllRead();
-  }, [user?.id, notifications.length]);
-
-  if (!user) return <div style={{ textAlign: "center", padding: "4rem" }}><button onClick={() => onNavigate("login")} style={{ color: "#d97706", background: "none", border: "none", cursor: "pointer" }}>Sign in →</button></div>;
-
-  return (
-    <div style={{ maxWidth: 760, margin: "2rem auto", padding: "0 1rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: "1rem" }}>
-        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif" }}>Notifications</h1>
-        <span style={{ fontSize: 12, color: "#6b7280" }}>{notifications.filter(n => !n.read).length} unread</span>
-      </div>
-      {notifications.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "4rem 0", color: "#6b7280" }}>No notifications yet.</div>
-      ) : notifications.map(n => (
-        <button
-          key={n.id}
-          onClick={() => n.listingId ? onNavigate("item", n.listingId) : n.actorId ? onNavigate("user-profile", n.actorId) : null}
-          style={{ width: "100%", textAlign: "left", background: n.read ? "#fff" : "#fffbeb", border: "0.5px solid #e5e7eb", borderRadius: 8, padding: "12px 14px", marginBottom: 10, cursor: n.listingId || n.actorId ? "pointer" : "default" }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-            <strong style={{ fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><RedDot show={!n.read} />{n.title}</strong>
-            <span style={{ fontSize: 11, color: "#9ca3af", whiteSpace: "nowrap" }}>{timeAgo(n.createdAt)}</span>
-          </div>
-          <p style={{ margin: "6px 0 0", color: "#6b7280", fontSize: 13 }}>{n.message}</p>
-        </button>
-      ))}
     </div>
   );
 }
@@ -1226,9 +1222,11 @@ function AnalyticsPage({ users }) {
   const byCTA = {};
   const byCountry = {};
   const byHour = Array(24).fill(0);
+  const guestIps = new Set();
 
   filtered.forEach(e => {
     byType[e.type] = (byType[e.type] || 0) + 1;
+    if (e.actorType === "guest" && e.guestIp) guestIps.add(e.guestIp);
     if (e.page) byPage[e.page] = (byPage[e.page] || 0) + 1;
     if (e.type === "cta_click" && e.label) byCTA[e.label] = (byCTA[e.label] || 0) + 1;
     if (e.location?.country) byCountry[e.location.country] = (byCountry[e.location.country] || 0) + 1;
@@ -1248,6 +1246,7 @@ function AnalyticsPage({ users }) {
     { label: "Items Posted",    value: byType.listing_posted || 0,   icon: "📦", color: "#10b981" },
     { label: "Logins",          value: byType.login || 0,            icon: "🔑", color: "#f59e0b" },
     { label: "Registrations",   value: byType.register || 0,         icon: "👤", color: "#ec4899" },
+    { label: "Guest IPs",        value: guestIps.size,                icon: "Guest", color: "#111827" },
   ];
 
   if (loading) return <Spinner />;
@@ -1358,7 +1357,7 @@ function AnalyticsPage({ users }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ background: "#f9fafb" }}>
-                {["Type", "Label", "Page", "User", "Location", "Time"].map(h => (
+                {["Type", "Label", "Page", "User / Guest", "Location", "Time"].map(h => (
                   <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontWeight: 500, color: "#6b7280", whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
@@ -1378,7 +1377,7 @@ function AnalyticsPage({ users }) {
                         </td>
                         <td style={{ padding: "7px 12px", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#374151" }}>{e.label || "—"}</td>
                         <td style={{ padding: "7px 12px", color: "#6b7280" }}>{e.page || "—"}</td>
-                        <td style={{ padding: "7px 12px", color: "#6b7280" }}>{u ? u.username : (e.userId ? "deleted" : "guest")}</td>
+                        <td style={{ padding: "7px 12px", color: "#6b7280" }}>{u ? u.username : (e.userId ? "deleted" : `guest${e.guestIp ? ` · ${e.guestIp}` : ""}`)}</td>
                         <td style={{ padding: "7px 12px", color: "#6b7280", whiteSpace: "nowrap" }}>
                           {e.location?.city ? `${e.location.city}, ${e.location.countryCode || e.location.country}` : "—"}
                         </td>
@@ -1396,119 +1395,7 @@ function AnalyticsPage({ users }) {
 
 // ── Admin Page ────────────────────────────────────────────────────────────────
 
-function CleanAnalyticsPage({ users, listings, exchanges }) {
-  const mobile = useMediaQuery("(max-width: 760px)");
-  const [events, setEvents] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [queryText, setQueryText] = useState("");
-  const [timeRange, setTimeRange] = useState("7d");
-
-  useEffect(() => {
-    analyticsDb.getRecent(1000).then(data => { setEvents(data); setLoading(false); });
-  }, []);
-
-  if (loading) return <Spinner />;
-
-  const now = Date.now();
-  const ranges = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, all: Infinity };
-  const knownUsers = users.map(u => ({ ...u, userNumber: userNumber(u) }));
-  const search = queryText.trim().toLowerCase();
-  const inRange = events.filter(e => {
-    const t = e.localTime ? new Date(e.localTime).getTime() : 0;
-    return now - t <= (ranges[timeRange] || Infinity);
-  });
-  const filteredEvents = inRange.filter(e => {
-    if (!search) return true;
-    const u = knownUsers.find(x => x.id === e.userId);
-    return [e.userNumber, u?.userNumber, u?.username, u?.email, e.type, e.label, e.page, e.listingTitle]
-      .filter(Boolean)
-      .some(v => String(v).toLowerCase().includes(search));
-  });
-  const activeUsers = new Set(filteredEvents.map(e => e.userId).filter(Boolean)).size;
-  const offers = filteredEvents.filter(e => e.type?.includes("offer")).length;
-  const posts = filteredEvents.filter(e => e.type === "listing_posted").length;
-  const userRows = knownUsers.map(u => {
-    const userEvents = inRange.filter(e => e.userId === u.id || String(e.userNumber) === String(u.userNumber));
-    return {
-      ...u,
-      eventCount: userEvents.length,
-      lastSeen: userEvents[0]?.localTime || u.lastLoginAt || u.joined,
-      listings: listings.filter(l => l.userId === u.id).length,
-      offers: exchanges.filter(ex => ex.offererId === u.id).length,
-    };
-  }).filter(u => !search || [u.userNumber, u.username, u.email, u.role].some(v => String(v || "").toLowerCase().includes(search)))
-    .sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
-  const statStyle = { background: "#fff", border: "0.5px solid #e5e7eb", borderRadius: 8, padding: "14px 16px" };
-  const typeColors = { page_view: "#2563eb", cta_click: "#d97706", offer_submitted: "#7c3aed", offer_accepted: "#059669", offer_declined: "#dc2626", listing_posted: "#0891b2", login: "#4b5563", register: "#be185d" };
-
-  return (
-    <div style={{ display: "grid", gap: 14 }}>
-      <div style={{ display: "flex", gap: 10, alignItems: mobile ? "stretch" : "center", justifyContent: "space-between", flexWrap: "wrap", flexDirection: mobile ? "column" : "row" }}>
-        <input value={queryText} onChange={e => setQueryText(e.target.value)} placeholder="Search user ID, name, email, event, listing" style={{ minWidth: mobile ? 0 : 260, flex: 1, width: mobile ? "100%" : undefined }} />
-        <div style={{ display: "flex", gap: 6, overflowX: mobile ? "auto" : "visible", paddingBottom: mobile ? 2 : 0 }}>
-          {["24h", "7d", "30d", "all"].map(r => (
-            <button key={r} onClick={() => setTimeRange(r)} style={{ padding: "7px 12px", border: "0.5px solid #e5e7eb", borderRadius: 8, background: timeRange === r ? "#111827" : "#fff", color: timeRange === r ? "#fff" : "#374151", cursor: "pointer", fontSize: 12 }}>{r === "all" ? "All" : r}</button>
-          ))}
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
-        <div style={statStyle}><p style={{ margin: 0, color: "#6b7280", fontSize: 12 }}>Events</p><strong style={{ fontSize: 26 }}>{filteredEvents.length}</strong></div>
-        <div style={statStyle}><p style={{ margin: 0, color: "#6b7280", fontSize: 12 }}>Active users</p><strong style={{ fontSize: 26 }}>{activeUsers}</strong></div>
-        <div style={statStyle}><p style={{ margin: 0, color: "#6b7280", fontSize: 12 }}>Offer activity</p><strong style={{ fontSize: 26 }}>{offers}</strong></div>
-        <div style={statStyle}><p style={{ margin: 0, color: "#6b7280", fontSize: 12 }}>Posts</p><strong style={{ fontSize: 26 }}>{posts}</strong></div>
-      </div>
-
-      <div style={{ background: "#fff", border: "0.5px solid #e5e7eb", borderRadius: 8, overflow: "hidden" }}>
-        <div style={{ padding: "12px 14px", borderBottom: "0.5px solid #e5e7eb", display: "flex", justifyContent: "space-between" }}>
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Users</h3>
-          <span style={{ fontSize: 12, color: "#6b7280" }}>{userRows.length} shown</span>
-        </div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead><tr style={{ background: "#f9fafb" }}>{["User ID","User","Role","Events","Listings","Offers","Last activity"].map(h => <th key={h} style={{ padding: "9px 12px", textAlign: "left", color: "#6b7280", fontWeight: 600 }}>{h}</th>)}</tr></thead>
-            <tbody>{userRows.slice(0, 25).map(u => (
-              <tr key={u.id} style={{ borderTop: "0.5px solid #f3f4f6" }}>
-                <td style={{ padding: "9px 12px", fontWeight: 600 }}>#{u.userNumber}</td>
-                <td style={{ padding: "9px 12px" }}><div style={{ fontWeight: 500 }}>{u.username}</div><div style={{ color: "#6b7280" }}>{u.email}</div></td>
-                <td style={{ padding: "9px 12px", color: "#6b7280" }}>{u.role}</td>
-                <td style={{ padding: "9px 12px" }}>{u.eventCount}</td>
-                <td style={{ padding: "9px 12px" }}>{u.listings}</td>
-                <td style={{ padding: "9px 12px" }}>{u.offers}</td>
-                <td style={{ padding: "9px 12px", color: "#6b7280" }}>{u.lastSeen ? timeAgo(u.lastSeen) : "none"}</td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
-      </div>
-
-      <div style={{ background: "#fff", border: "0.5px solid #e5e7eb", borderRadius: 8, overflow: "hidden" }}>
-        <div style={{ padding: "12px 14px", borderBottom: "0.5px solid #e5e7eb" }}><h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Recent actions</h3></div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead><tr style={{ background: "#f9fafb" }}>{["Time","User ID","User","Action","Page","Details"].map(h => <th key={h} style={{ padding: "9px 12px", textAlign: "left", color: "#6b7280", fontWeight: 600 }}>{h}</th>)}</tr></thead>
-            <tbody>{filteredEvents.slice(0, 80).map(e => {
-              const u = knownUsers.find(x => x.id === e.userId);
-              return (
-                <tr key={e.id} style={{ borderTop: "0.5px solid #f3f4f6" }}>
-                  <td style={{ padding: "9px 12px", color: "#6b7280", whiteSpace: "nowrap" }}>{e.localTime ? timeAgo(e.localTime) : "now"}</td>
-                  <td style={{ padding: "9px 12px", fontWeight: 600 }}>{u ? `#${u.userNumber}` : e.userNumber ? `#${e.userNumber}` : "guest"}</td>
-                  <td style={{ padding: "9px 12px" }}>{u?.username || "Guest"}</td>
-                  <td style={{ padding: "9px 12px" }}><span style={{ color: typeColors[e.type] || "#374151", fontWeight: 600 }}>{e.type?.replace(/_/g, " ")}</span></td>
-                  <td style={{ padding: "9px 12px", color: "#6b7280" }}>{e.page || "-"}</td>
-                  <td style={{ padding: "9px 12px", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.label || e.listingTitle || "-"}</td>
-                </tr>
-              );
-            })}</tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AdminPage({ user, listings, exchanges, users, onRefresh, onNavigate }) {
-  const mobile = useMediaQuery("(max-width: 760px)");
+function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals, onRefresh, onNavigate }) {
   const [tab, setTab] = useState("analytics");
   if (!user || user.role !== "admin") return <div style={{ textAlign: "center", padding: "4rem" }}>Access denied. Admin only.</div>;
 
@@ -1522,6 +1409,24 @@ function AdminPage({ user, listings, exchanges, users, onRefresh, onNavigate }) 
   }
   async function deleteListing(id) { if (!confirm("Delete this listing?")) return; await listingDb.delete(id); onRefresh(); }
   async function deleteExchange(id) { await exchangeDb.delete(id); onRefresh(); }
+  async function resolveReport(id) { await reportDb.update(id, { status: "resolved", resolvedBy: user.id }); onRefresh(); }
+  async function suspendFromReport(report) {
+    if (!report.reportedUserId) return;
+    await userDb.update(report.reportedUserId, { active: false, suspendedAt: new Date().toISOString(), suspensionReason: report.reason || "report" });
+    await reportDb.update(report.id, { status: "actioned", action: "user_suspended", resolvedBy: user.id });
+    onRefresh();
+  }
+  async function removeReportedListing(report) {
+    if (!report.listingId) return;
+    await listingDb.delete(report.listingId);
+    await reportDb.update(report.id, { status: "actioned", action: "listing_removed", resolvedBy: user.id });
+    onRefresh();
+  }
+  async function decideAppeal(appeal, approved) {
+    if (approved && appeal.userId) await userDb.update(appeal.userId, { active: true, appealApprovedAt: new Date().toISOString() });
+    await appealDb.update(appeal.id, { status: approved ? "approved" : "declined", reviewedBy: user.id });
+    onRefresh();
+  }
 
   const stats = [
     { l: "Total users",    v: users.length },
@@ -1537,7 +1442,7 @@ function AdminPage({ user, listings, exchanges, users, onRefresh, onNavigate }) 
   return (
     <div style={{ maxWidth: 1000, margin: "2rem auto", padding: "0 1rem" }}>
       <h1 style={{ fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif", marginBottom: "1.5rem" }}>Admin dashboard</h1>
-      <div style={{ display: "grid", gridTemplateColumns: mobile ? "repeat(2,1fr)" : "repeat(4,1fr)", gap: 10, marginBottom: 20 }}>
+      <div className="admin-stats-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 20 }}>
         {stats.map(s => (
           <div key={s.l} style={{ background: "#f9fafb", borderRadius: 8, padding: "1rem", textAlign: "center" }}>
             <p style={{ margin: "0 0 4px", fontSize: 12, color: "#6b7280" }}>{s.l}</p>
@@ -1545,25 +1450,78 @@ function AdminPage({ user, listings, exchanges, users, onRefresh, onNavigate }) 
           </div>
         ))}
       </div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", overflowX: mobile ? "auto" : "visible", paddingBottom: mobile ? 4 : 0 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         <TabBtn id="analytics" l="📊 Analytics" />
         <TabBtn id="users"     l="👥 Users" />
         <TabBtn id="listings"  l="📦 Listings" />
         <TabBtn id="exchanges" l="🤝 Exchanges" />
+        <TabBtn id="moderation" l="Moderation" />
       </div>
 
-      {tab === "analytics" && <CleanAnalyticsPage users={users} listings={listings} exchanges={exchanges} />}
+      {tab === "analytics" && <AnalyticsPage users={users} />}
 
-      {tab !== "analytics" && (
+      {tab === "moderation" && (
+        <div style={{ display: "grid", gap: 16 }}>
+          <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1rem" }}>
+            <h2 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 500 }}>Reports ({reports.filter(r => r.status !== "resolved").length})</h2>
+            {reports.length === 0 ? <p style={{ color: "#6b7280", fontSize: 13 }}>No reports yet.</p> : reports.map(report => {
+              const reporter = users.find(u => u.id === report.reporterId);
+              const reported = users.find(u => u.id === report.reportedUserId);
+              return (
+                <div key={report.id} style={{ borderTop: "0.5px solid #f3f4f6", padding: "12px 0" }}>
+                  <p style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>{report.type} report · {report.reason} · {report.status}</p>
+                  <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>Reporter: {reporter?.username || "Unknown"} · Reported: {reported?.username || "Unknown"} · {timeAgo(report.createdAt)}</p>
+                  <p style={{ margin: "8px 0", fontSize: 13, color: "#374151" }}>{report.details}</p>
+                  {report.listingTitle && <p style={{ margin: "0 0 8px", fontSize: 12, color: "#6b7280" }}>Listing: {report.listingTitle}</p>}
+                  {report.messageText && <p style={{ margin: "0 0 8px", fontSize: 12, color: "#991b1b" }}>Reported message: {report.messageText}</p>}
+                  {Array.isArray(report.conversationSnapshot) && (
+                    <div style={{ background: "#f9fafb", borderRadius: 8, padding: 10, marginBottom: 8, maxHeight: 220, overflow: "auto" }}>
+                      {report.conversationSnapshot.map((m, i) => <p key={i} style={{ margin: "0 0 6px", fontSize: 12, color: "#374151" }}><strong>{m.senderName}:</strong> {m.text}</p>)}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {report.listingId && <button onClick={() => removeReportedListing(report)} style={{ padding: "5px 10px", background: "#fee2e2", border: "0.5px solid #fca5a5", color: "#991b1b", borderRadius: 8, fontSize: 12 }}>Remove post</button>}
+                    {report.reportedUserId && <button onClick={() => suspendFromReport(report)} style={{ padding: "5px 10px", background: "#111827", color: "white", border: "none", borderRadius: 8, fontSize: 12 }}>Suspend user</button>}
+                    <button onClick={() => resolveReport(report.id)} style={{ padding: "5px 10px", background: "#f9fafb", border: "0.5px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}>Mark resolved</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1rem" }}>
+            <h2 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 500 }}>Appeals ({appeals.filter(a => a.status === "open").length})</h2>
+            {appeals.length === 0 ? <p style={{ color: "#6b7280", fontSize: 13 }}>No appeals yet.</p> : appeals.map(appeal => (
+              <div key={appeal.id} style={{ borderTop: "0.5px solid #f3f4f6", padding: "12px 0" }}>
+                <p style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>{appeal.username} · {appeal.email} · {appeal.status}</p>
+                <p style={{ margin: "0 0 8px", fontSize: 13, color: "#374151" }}>{appeal.message}</p>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => decideAppeal(appeal, true)} style={{ padding: "5px 10px", background: "#d1fae5", border: "0.5px solid #86efac", color: "#065f46", borderRadius: 8, fontSize: 12 }}>Approve</button>
+                  <button onClick={() => decideAppeal(appeal, false)} style={{ padding: "5px 10px", background: "#fee2e2", border: "0.5px solid #fca5a5", color: "#991b1b", borderRadius: 8, fontSize: 12 }}>Decline</button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, padding: "1rem" }}>
+            <h2 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 500 }}>Genuine user ratings</h2>
+            {users.map(u => {
+              const score = avgRating(ratings.filter(r => r.targetUserId === u.id), r => r.userRating);
+              return <p key={u.id} style={{ margin: "0 0 6px", fontSize: 13 }}>{u.username}: {score ? `${score.toFixed(1)} / 5` : "not rated"}</p>;
+            })}
+          </div>
+        </div>
+      )}
+
+      {tab !== "analytics" && tab !== "moderation" && (
         <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, overflow: "auto" }}>
           {tab === "users" && (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-              <thead><tr style={{ background: "#f9fafb" }}>{["User ID","User","Email","Role","Joined","Status","Actions"].map(h => <th key={h} style={{ padding: "10px 12px", textAlign: "left", fontWeight: 500, color: "#6b7280", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
+              <thead><tr style={{ background: "#f9fafb" }}>{["User","Email","Public ID","User ID","Role","Joined","Status","Actions"].map(h => <th key={h} style={{ padding: "10px 12px", textAlign: "left", fontWeight: 500, color: "#6b7280", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
               <tbody>{users.map(u => (
                 <tr key={u.id} style={{ borderTop: "0.5px solid #f9fafb" }}>
-                  <td style={{ padding: "10px 12px", fontWeight: 600 }}>#{userNumber(u)}</td>
                   <td style={{ padding: "10px 12px", fontWeight: 500 }}>{u.username}</td>
                   <td style={{ padding: "10px 12px", color: "#6b7280" }}>{u.email}</td>
+                  <td style={{ padding: "10px 12px", color: "#6b7280", fontFamily: "monospace" }}>{publicUserId(u)}</td>
+                  <td style={{ padding: "10px 12px", color: "#6b7280", fontFamily: "monospace", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>{u.id}</td>
                   <td style={{ padding: "10px 12px" }}><span style={{ fontSize: 11, background: u.role === "admin" ? "#d97706" : "#f9fafb", color: u.role === "admin" ? "white" : "#6b7280", padding: "2px 8px", borderRadius: 20 }}>{u.role}</span></td>
                   <td style={{ padding: "10px 12px", color: "#6b7280" }}>{new Date(u.joined).toLocaleDateString()}</td>
                   <td style={{ padding: "10px 12px" }}><span style={{ fontSize: 11, background: u.active ? "#d1fae5" : "#fee2e2", color: u.active ? "#065f46" : "#991b1b", padding: "2px 8px", borderRadius: 20 }}>{u.active ? "Active" : "Suspended"}</span></td>
@@ -1619,45 +1577,37 @@ function AdminPage({ user, listings, exchanges, users, onRefresh, onNavigate }) 
 
 // ── Navbar ────────────────────────────────────────────────────────────────────
 
-function Navbar({ user, page, onNavigate, onLogout, listings = [], exchanges = [], notifications = [] }) {
-  const mobile = useMediaQuery("(max-width: 760px)");
-  const unreadListings = user ? exchanges.filter(e => {
-    const listing = listings.find(l => l.id === e.listingId);
-    return listing?.userId === user.id && e.seenByOwner === false;
-  }).length : 0;
-  const unreadOffers = user ? exchanges.filter(e => e.offererId === user.id && e.status !== "pending" && e.statusSeenByOfferer === false).length : 0;
-  const unreadNotifications = user ? notifications.filter(n => !n.read).length : 0;
+function Navbar({ user, page, onNavigate, onLogout }) {
   const navItems = [
     { id: "browse", l: "Browse" },
     ...(user ? [
       { id: "post", l: "Post item" },
-      { id: "my-listings", l: "My listings", dot: unreadListings > 0 },
-      { id: "my-exchanges", l: "Exchanges", dot: unreadOffers > 0 },
-      { id: "notifications", l: "Notifications", dot: unreadNotifications > 0 },
+      { id: "my-listings", l: "My listings" },
+      { id: "my-exchanges", l: "Exchanges" },
+      { id: "chats", l: "Chats" },
+      { id: "settings", l: "Settings" },
       ...(user.role === "admin" ? [{ id: "admin", l: "Admin ★" }] : []),
     ] : []),
   ];
   return (
-    <nav style={{ background: "#fff", borderBottom: "0.5px solid #f3f4f6", padding: mobile ? "8px 0.75rem" : "0 1.25rem", display: "flex", alignItems: mobile ? "stretch" : "center", justifyContent: "space-between", gap: mobile ? 8 : 0, minHeight: 52, height: mobile ? "auto" : 52, position: "sticky", top: 0, zIndex: 100, flexDirection: mobile ? "column" : "row" }}>
-      <button onClick={() => onNavigate("home")} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, padding: "4px 0", justifyContent: mobile ? "center" : "flex-start" }}>
+    <nav style={{ background: "#fff", borderBottom: "0.5px solid #f3f4f6", padding: "0 1.25rem", display: "flex", alignItems: "center", justifyContent: "space-between", height: 52, position: "sticky", top: 0, zIndex: 100 }}>
+      <button onClick={() => onNavigate("home")} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
         <span style={{ fontSize: 20 }}>⚖️</span>
-        <span style={{ width: 28, height: 28, borderRadius: "50%", background: "#ff4500", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800 }}>SC</span>
-        <span style={{ fontSize: 16, fontWeight: 800, color: "#ff4500" }}>SwapCircle</span>
+        <span style={{ fontSize: 16, fontWeight: 500, fontFamily: "Georgia, serif", color: "#d97706" }}>BarterHub</span>
       </button>
-      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: mobile ? "nowrap" : "wrap", overflowX: mobile ? "auto" : "visible", paddingBottom: mobile ? 2 : 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
         {navItems.map(n => (
           <button key={n.id} onClick={() => { trackCTA(`nav_${n.id}`, page, user?.id); onNavigate(n.id); }}
             style={{ padding: "6px 10px", background: page === n.id ? "#f9fafb" : "none", border: "none", cursor: "pointer", fontSize: 13, borderRadius: 8, color: n.id === "admin" ? "#d97706" : "#111827", fontWeight: n.id === "admin" ? 500 : 400 }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>{n.l}<RedDot show={n.dot} /></span>
+            {n.l}
           </button>
         ))}
         {user
-          ? <button onClick={() => onNavigate("profile")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: "none", border: "0.5px solid #e5e7eb", borderRadius: 20, cursor: "pointer", fontSize: 13, marginLeft: 4, flexShrink: 0 }}>
+          ? <button onClick={() => onNavigate("profile")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: "none", border: "0.5px solid #e5e7eb", borderRadius: 20, cursor: "pointer", fontSize: 13, marginLeft: 4 }}>
               <span style={{ width: 22, height: 22, borderRadius: "50%", background: "#d97706", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 500, flexShrink: 0 }}>{user.username[0].toUpperCase()}</span>
               <span>{user.username}</span>
-              <span style={{ color: "#9ca3af", fontSize: 11 }}>#{userNumber(user)}</span>
             </button>
-          : <div style={{ display: "flex", gap: 6, marginLeft: 4, flexShrink: 0 }}>
+          : <div style={{ display: "flex", gap: 6, marginLeft: 4 }}>
               <button onClick={() => { trackCTA("nav_sign_in", page); onNavigate("login"); }} style={{ padding: "6px 14px", background: "none", border: "0.5px solid #e5e7eb", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>Sign in</button>
               <button onClick={() => { trackCTA("nav_register", page); onNavigate("register"); }} style={{ padding: "6px 14px", background: "#d97706", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>Register</button>
             </div>}
@@ -1674,93 +1624,34 @@ export default function App() {
   const [pageParam, setPageParam] = useState(null);
   const [listings, setListings] = useState([]);
   const [exchanges, setExchanges] = useState([]);
-  const [comments, setComments] = useState([]);
+  const [reports, setReports] = useState([]);
+  const [ratings, setRatings] = useState([]);
+  const [appeals, setAppeals] = useState([]);
   const [users, setUsers] = useState([]);
-  const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem("bh_dark_mode") === "true");
 
-  async function loadAll(activeUserId = user?.id) {
-    await userDb.ensureUserNumbers();
-    const [u, l, e, c, n] = await Promise.all([
-      userDb.getAll(),
-      listingDb.getAll(),
-      exchangeDb.getAll(),
-      commentDb.getAll(),
-      activeUserId ? notificationDb.deleteReadOlderThan(activeUserId, 24).then(() => notificationDb.getForUser(activeUserId)) : Promise.resolve([]),
-    ]);
-    setUsers(u); setListings(l); setExchanges(e); setComments(c); setNotifications(n);
-    return { users: u, listings: l, exchanges: e, comments: c, notifications: n };
+  async function loadAll() {
+    const [u, l, e, r, rate, a] = await Promise.all([userDb.getAll(), listingDb.getAll(), exchangeDb.getAll(), reportDb.getAll(), ratingDb.getAll(), appealDb.getAll()]);
+    setUsers(u); setListings(l); setExchanges(e); setReports(r); setRatings(rate); setAppeals(a);
   }
 
-  async function refreshNotifications(activeUserId = user?.id) {
-    if (!activeUserId) { setNotifications([]); return []; }
-    await notificationDb.deleteReadOlderThan(activeUserId, 24);
-    const n = await notificationDb.getForUser(activeUserId);
-    setNotifications(n);
-    return n;
-  }
-
-  async function handleToggleLike(listing) {
-    if (!user) { navigate("login"); return; }
-    if (listing.userId === user.id) return;
-    const result = await listingDb.toggleLike(listing.id, user.id);
-    if (result?.liked) {
-      const nextInterests = { ...(user.interests || {}), [listing.category]: (user.interests?.[listing.category] || 0) + 1 };
-      await userDb.update(user.id, { interests: nextInterests });
-      setUser({ ...user, interests: nextInterests });
-      await notificationDb.create({
-        userId: listing.userId,
-        actorId: user.id,
-        actorNumber: user.userNumber || null,
-        type: "listing_liked",
-        title: "New like",
-        message: `${user.username} liked ${listing.title}`,
-        listingId: listing.id,
-      });
-      trackEvent({ type: "listing_liked", label: listing.title, page, userId: user.id, extra: { userNumber: user.userNumber, listingId: listing.id, listingTitle: listing.title, category: listing.category } });
-    }
-    await loadAll(user.id);
-  }
-
-  async function handleToggleFollow(targetUser) {
-    if (!user) { navigate("login"); return; }
-    if (!targetUser || targetUser.id === user.id) return;
-    const result = await userDb.toggleFollow(user.id, targetUser.id);
-    if (!result) return;
-    const nextUser = { ...user, following: result.following };
-    setUser(nextUser);
-    if (result.isFollowing) {
-      await notificationDb.create({
-        userId: targetUser.id,
-        actorId: user.id,
-        actorNumber: user.userNumber || null,
-        type: "user_followed",
-        title: "New follower",
-        message: `${user.username} followed you`,
-      });
-      trackEvent({ type: "user_followed", label: targetUser.username, page, userId: user.id, extra: { userNumber: user.userNumber, targetUserId: targetUser.id, targetUserNumber: targetUser.userNumber || null } });
-    }
-    await loadAll(user.id);
-  }
-
-  async function markNotificationsRead() {
-    if (!user) return;
-    await notificationDb.markAllRead(user.id);
-    await notificationDb.deleteReadOlderThan(user.id, 24);
-    await refreshNotifications(user.id);
-  }
+  useEffect(() => {
+    document.documentElement.dataset.theme = darkMode ? "dark" : "light";
+    localStorage.setItem("bh_dark_mode", String(darkMode));
+  }, [darkMode]);
 
   useEffect(() => {
     async function init(){
   try {
     console.log("1. starting...");
     await auth.seedAdmin();
+    await userDb.ensureUserNumbers();
     console.log("2. seedAdmin done");
     const me = await auth.me();
+    if (me) setUser(me);
     console.log("3. auth.me done", me);
-    setUser(me);
-    const fresh = await loadAll(me?.id);
-    if (me) setUser(fresh.users.find(u => u.id === me.id) || me);
+    await loadAll();
     console.log("4. loadAll done");
   } catch(e) {
     console.error("Init failed:", e);
@@ -1775,18 +1666,14 @@ export default function App() {
   // Track page views automatically
   useEffect(() => {
     if (!loading) {
-      trackPageView(page, user?.id, { userNumber: user?.userNumber || null });
+      trackPageView(page, user?.id);
     }
-  }, [page, loading, user?.id]);
+  }, [page, loading]);
 
   function navigate(p, param = null) { setPage(p); setPageParam(param); }
 
-  async function handleLogin(u) {
-    const fresh = await loadAll(u.id);
-    setUser(fresh.users.find(x => x.id === u.id) || u);
-    navigate("home");
-  }
-  async function handleLogout() { await auth.logout(); setUser(null); setNotifications([]); navigate("home"); }
+  async function handleLogin(u) { setUser(u); await loadAll(); navigate("home"); }
+  async function handleLogout() { await auth.logout(); setUser(null); navigate("home"); }
 
   if (loading) return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -1795,24 +1682,25 @@ export default function App() {
   );
 
   return (
-    <div style={{ minHeight: "100vh", background: "#dae0e6" }}>
+    <div style={{ minHeight: "100vh", background: darkMode ? "#111827" : "#f3f4f6" }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      <Navbar user={user} page={page} onNavigate={navigate} onLogout={handleLogout} listings={listings} exchanges={exchanges} notifications={notifications} />
+      <Navbar user={user} page={page} onNavigate={navigate} onLogout={handleLogout} />
       <main>
-        {page === "home"         && <HomePage onNavigate={navigate} listings={listings} users={users} comments={comments} currentUser={user} onToggleLike={handleToggleLike} onToggleFollow={handleToggleFollow} />}
-        {page === "browse"       && <BrowsePage listings={listings} users={users} comments={comments} onNavigate={navigate} currentUser={user} onToggleLike={handleToggleLike} onToggleFollow={handleToggleFollow} />}
-        {page === "post"         && <PostItemPage user={user} users={users} onPosted={() => loadAll(user?.id)} onNavigate={navigate} />}
-        {page === "item"         && <ItemDetailPage listingId={pageParam} listings={listings} users={users} exchanges={exchanges} comments={comments} user={user} onNavigate={navigate} onRefresh={loadAll} onToggleLike={handleToggleLike} onToggleFollow={handleToggleFollow} />}
-        {page === "discussion"   && <DiscussionPage listingId={pageParam} listings={listings} users={users} comments={comments} user={user} onNavigate={navigate} onRefresh={loadAll} />}
+        {page === "home"         && <HomePage onNavigate={navigate} listings={listings} users={users} currentUser={user} onUserUpdate={setUser} />}
+        {page === "browse"       && <BrowsePage listings={listings} users={users} onNavigate={navigate} currentUser={user} />}
+        {page === "post"         && <PostItemPage user={user} onPosted={loadAll} onNavigate={navigate} />}
+        {page === "item"         && <ItemDetailPage listingId={pageParam} listings={listings} users={users} exchanges={exchanges} ratings={ratings} user={user} onNavigate={navigate} onRefresh={loadAll} onReportCreated={loadAll} />}
         {page === "my-listings"  && <MyListingsPage user={user} listings={listings} exchanges={exchanges} onNavigate={navigate} onRefresh={loadAll} />}
-        {page === "my-exchanges" && <MyExchangesPage user={user} listings={listings} exchanges={exchanges} users={users} onNavigate={navigate} />}
-        {page === "profile"      && <ProfilePage user={user} users={users} listings={listings} comments={comments} onNavigate={navigate} onToggleLike={handleToggleLike} onToggleFollow={handleToggleFollow} onLogout={handleLogout} />}
-        {page === "user-profile" && <UserProfilePage profileUserId={pageParam} users={users} listings={listings} comments={comments} currentUser={user} onNavigate={navigate} onToggleLike={handleToggleLike} onToggleFollow={handleToggleFollow} />}
-        {page === "social-list"  && <SocialListPage pageParam={pageParam} users={users} currentUser={user} onNavigate={navigate} onToggleFollow={handleToggleFollow} />}
-        {page === "notifications" && <NotificationsPage user={user} notifications={notifications} onNavigate={navigate} onMarkAllRead={markNotificationsRead} />}
-        {page === "admin"        && <AdminPage user={user} listings={listings} exchanges={exchanges} users={users} onRefresh={loadAll} onNavigate={navigate} />}
+        {page === "my-exchanges" && <MyExchangesPage user={user} listings={listings} exchanges={exchanges} users={users} ratings={ratings} onNavigate={navigate} onRated={loadAll} />}
+        {page === "chats"        && <ChatsPage user={user} listings={listings} exchanges={exchanges} users={users} selectedThreadId={null} onNavigate={navigate} onUserUpdate={setUser} />}
+        {page === "chat"         && <ChatsPage user={user} listings={listings} exchanges={exchanges} users={users} selectedThreadId={pageParam} onNavigate={navigate} onUserUpdate={setUser} />}
+        {page === "settings"     && <SettingsPage darkMode={darkMode} onDarkModeChange={setDarkMode} />}
+        {page === "profile"      && <ProfilePage user={user} onLogout={handleLogout} />}
+        {page === "admin"        && <AdminPage user={user} listings={listings} exchanges={exchanges} users={users} reports={reports} ratings={ratings} appeals={appeals} onRefresh={loadAll} onNavigate={navigate} />}
         {page === "login"        && <LoginPage onLogin={handleLogin} onNavigate={navigate} />}
         {page === "register"     && <RegisterPage onLogin={handleLogin} onNavigate={navigate} />}
+        {page === "reset-password" && <ResetPasswordPage onNavigate={navigate} />}
+        {page === "appeal"       && <AppealPage onNavigate={navigate} />}
       </main>
     </div>
   );

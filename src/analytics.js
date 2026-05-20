@@ -37,11 +37,21 @@ async function getLocation() {
 export async function trackEvent({ type, label = "", page = "", userId = null, extra = {} }) {
   try {
     const location = await getLocation();
+    const actorType = userId ? "user" : "guest";
+    const guestIp = actorType === "guest" ? location.ip || "unknown" : "";
+    if (actorType === "guest") {
+      const day = new Date().toISOString().slice(0, 10);
+      const guestKey = `bh_guest_event_${guestIp}_${type}_${label}_${page}_${day}`;
+      if (localStorage.getItem(guestKey)) return;
+      localStorage.setItem(guestKey, "1");
+    }
     await addDoc(collection(db, "analytics_events"), {
       type,           // 'page_view' | 'cta_click' | 'offer_submitted' | 'listing_posted' | 'login' | 'register'
       label,          // button label or page title
       page,           // current page id
       userId,         // logged-in user id or null
+      actorType,
+      guestIp,
       userNumber: extra.userNumber || null,
       sessionId,
       location,       // { city, country, lat, lng, ... }

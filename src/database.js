@@ -4,7 +4,7 @@ import { db } from "./firebase";
 import {
   collection, doc, getDoc, getDocs, setDoc, addDoc,
   updateDoc, deleteDoc, query, where, limit,
-  serverTimestamp
+  serverTimestamp, onSnapshot, orderBy
 } from "firebase/firestore";
 
 const col = (name) => collection(db, name);
@@ -41,8 +41,9 @@ export const userDb = {
       const ref = doc(col("users"));
       const users = await getAll("users");
       const userNumber = data.userNumber || nextUserNumber(users);
-      await setDoc(ref, { ...data, id: ref.id, userNumber });
-      return { ...data, id: ref.id, userNumber };
+      const encryptedId = data.encryptedId || makePublicUserId(users);
+      await setDoc(ref, { ...data, id: ref.id, userNumber, encryptedId, messagingBannerSeen: false });
+      return { ...data, id: ref.id, userNumber, encryptedId, messagingBannerSeen: false };
     } catch (e) {
       console.error("userDb.create failed:", e);
       throw e;
@@ -53,8 +54,20 @@ export const userDb = {
     try {
       const users = await getAll("users");
       let next = nextUserNumber(users);
-      const missing = users.filter(u => !u.userNumber);
-      await Promise.all(missing.map(u => updateDoc(doc(db, "users", u.id), { userNumber: next++ })));
+      const usedIds = new Set(users.map(u => u.encryptedId).filter(Boolean));
+      const missing = users.filter(u => !u.userNumber || !u.encryptedId || u.messagingBannerSeen === undefined);
+      await Promise.all(missing.map(u => {
+        const patch = {};
+        if (!u.userNumber) patch.userNumber = next++;
+        if (!u.encryptedId) {
+          let id = randomAlphaNum(10);
+          while (usedIds.has(id)) id = randomAlphaNum(10);
+          usedIds.add(id);
+          patch.encryptedId = id;
+        }
+        if (u.messagingBannerSeen === undefined) patch.messagingBannerSeen = false;
+        return updateDoc(doc(db, "users", u.id), patch);
+      }));
       return missing.length;
     } catch (e) {
       console.error("userDb.ensureUserNumbers failed:", e);
@@ -254,6 +267,238 @@ export const exchangeDb = {
   },
 };
 
+// Chat threads and encrypted messages
+
+export const chatDb = {
+  async getThreadsForUser(userId) {
+    try {
+      if (!userId) return [];
+      const q = query(col("chat_threads"), where("participants", "array-contains", userId), limit(200));
+      const snap = await getDocs(q);
+      const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return items.sort((a, b) => new Date(b.lastMessageAt || b.createdAt || 0) - new Date(a.lastMessageAt || a.createdAt || 0));
+    } catch (e) {
+      console.error("chatDb.getThreadsForUser failed:", e);
+      return [];
+    }
+  },
+
+  async ensureThreadForExchange(exchange, listing) {
+    try {
+      if (!exchange?.id || !listing?.userId || !exchange?.offererId) return null;
+      const threadId = `exchange_${exchange.id}`;
+      const ref = doc(db, "chat_threads", threadId);
+      const snap = await getDoc(ref);
+      const participants = [listing.userId, exchange.offererId].sort();
+      const payload = {
+        exchangeId: exchange.id,
+        listingId: listing.id,
+        participants,
+        participantNames: {
+          [listing.userId]: listing.ownerUsername || "",
+          [exchange.offererId]: exchange.offererUsername || "",
+        },
+        active: true,
+        updatedAt: new Date().toISOString(),
+      };
+      if (!snap.exists()) {
+        await setDoc(ref, { ...payload, createdAt: new Date().toISOString(), typing: {} });
+      } else {
+        await updateDoc(ref, payload);
+      }
+      return { id: threadId, ...payload };
+    } catch (e) {
+      console.error("chatDb.ensureThreadForExchange failed:", e);
+      return null;
+    }
+  },
+
+  subscribeThread(threadId, cb) {
+    return onSnapshot(doc(db, "chat_threads", threadId), snap => {
+      cb(snap.exists() ? { id: snap.id, ...snap.data() } : null);
+    });
+  },
+
+  subscribeMessages(threadId, cb) {
+    const q = query(collection(db, "chat_threads", threadId, "messages"), orderBy("createdAt", "asc"), limit(300));
+    return onSnapshot(q, snap => cb(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+  },
+
+  async sendMessage(threadId, data) {
+    try {
+      const ref = await addDoc(collection(db, "chat_threads", threadId, "messages"), {
+        ...data,
+        createdAt: new Date().toISOString(),
+      });
+      await updateDoc(doc(db, "chat_threads", threadId), {
+        lastMessageAt: new Date().toISOString(),
+        lastSenderId: data.senderId,
+        lastCipherPreview: data.ciphertext?.slice(0, 18) || "",
+      });
+      return { ...data, id: ref.id };
+    } catch (e) {
+      console.error("chatDb.sendMessage failed:", e);
+      throw e;
+    }
+  },
+
+  async updateMessage(threadId, messageId, data) {
+    try {
+      await updateDoc(doc(db, "chat_threads", threadId, "messages", messageId), {
+        ...data,
+        editedAt: new Date().toISOString(),
+      });
+      await updateDoc(doc(db, "chat_threads", threadId), {
+        lastMessageAt: new Date().toISOString(),
+        lastCipherPreview: data.ciphertext?.slice(0, 18) || "",
+      });
+    } catch (e) {
+      console.error("chatDb.updateMessage failed:", e);
+      throw e;
+    }
+  },
+
+  async deleteMessage(threadId, messageId) {
+    try {
+      await updateDoc(doc(db, "chat_threads", threadId, "messages", messageId), {
+        deleted: true,
+        deletedAt: new Date().toISOString(),
+        ciphertext: "",
+        iv: "",
+      });
+      await updateDoc(doc(db, "chat_threads", threadId), {
+        lastMessageAt: new Date().toISOString(),
+        lastCipherPreview: "deleted",
+      });
+    } catch (e) {
+      console.error("chatDb.deleteMessage failed:", e);
+      throw e;
+    }
+  },
+
+  async setTyping(threadId, userId, isTyping) {
+    try {
+      await updateDoc(doc(db, "chat_threads", threadId), {
+        [`typing.${userId}`]: isTyping ? new Date().toISOString() : null,
+      });
+    } catch (e) {
+      console.error("chatDb.setTyping failed:", e);
+    }
+  },
+
+  async countMessagesToday(threadId, userId) {
+    try {
+      const q = query(collection(db, "chat_threads", threadId, "messages"), where("senderId", "==", userId), limit(300));
+      const snap = await getDocs(q);
+      const day = new Date().toISOString().slice(0, 10);
+      return snap.docs.filter(d => (d.data().createdAt || "").slice(0, 10) === day).length;
+    } catch (e) {
+      console.error("chatDb.countMessagesToday failed:", e);
+      return 0;
+    }
+  },
+};
+
+// Reports, ratings, and appeals
+
+export const reportDb = {
+  async getAll() {
+    try {
+      const snap = await getDocs(col("reports"));
+      const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    } catch (e) {
+      console.error("reportDb.getAll failed:", e);
+      return [];
+    }
+  },
+
+  async create(data) {
+    try {
+      const ref = await addDoc(col("reports"), {
+        ...data,
+        status: "open",
+        createdAt: new Date().toISOString(),
+      });
+      return { ...data, id: ref.id };
+    } catch (e) {
+      console.error("reportDb.create failed:", e);
+      throw e;
+    }
+  },
+
+  async update(id, data) {
+    try {
+      await updateDoc(doc(db, "reports", id), { ...data, updatedAt: new Date().toISOString() });
+    } catch (e) {
+      console.error("reportDb.update failed:", e);
+      throw e;
+    }
+  },
+};
+
+export const ratingDb = {
+  async getAll() {
+    try {
+      const snap = await getDocs(col("ratings"));
+      const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    } catch (e) {
+      console.error("ratingDb.getAll failed:", e);
+      return [];
+    }
+  },
+
+  async create(data) {
+    try {
+      const ref = await addDoc(col("ratings"), {
+        ...data,
+        createdAt: new Date().toISOString(),
+      });
+      return { ...data, id: ref.id };
+    } catch (e) {
+      console.error("ratingDb.create failed:", e);
+      throw e;
+    }
+  },
+};
+
+export const appealDb = {
+  async getAll() {
+    try {
+      const snap = await getDocs(col("appeals"));
+      const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    } catch (e) {
+      console.error("appealDb.getAll failed:", e);
+      return [];
+    }
+  },
+
+  async create(data) {
+    try {
+      const ref = await addDoc(col("appeals"), {
+        ...data,
+        status: "open",
+        createdAt: new Date().toISOString(),
+      });
+      return { ...data, id: ref.id };
+    } catch (e) {
+      console.error("appealDb.create failed:", e);
+      throw e;
+    }
+  },
+
+  async update(id, data) {
+    try {
+      await updateDoc(doc(db, "appeals", id), { ...data, updatedAt: new Date().toISOString() });
+    } catch (e) {
+      console.error("appealDb.update failed:", e);
+      throw e;
+    }
+  },
+};
+
 // Notifications
 
 export const notificationDb = {
@@ -392,7 +637,7 @@ export const sessionDb = {
         exp: Date.now() + 7 * 86400000,
         createdAt: serverTimestamp(),
       });
-      sessionStorage.setItem("bh_tok", token);
+      localStorage.setItem("bh_tok", token);
       return token;
     } catch (e) {
       console.error("sessionDb.create failed:", e);
@@ -459,4 +704,18 @@ export function genId() {
 function nextUserNumber(users) {
   const max = users.reduce((n, u) => Math.max(n, Number(u.userNumber) || 1000), 1000);
   return max + 1;
+}
+
+function makePublicUserId(users) {
+  const used = new Set(users.map(u => u.encryptedId).filter(Boolean));
+  let id = randomAlphaNum(10);
+  while (used.has(id)) id = randomAlphaNum(10);
+  return id;
+}
+
+function randomAlphaNum(len) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => chars[b % chars.length]).join("");
 }

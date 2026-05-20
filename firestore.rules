@@ -42,5 +42,26 @@ service cloud.firestore {
       allow read: if true;
       allow write: if true;
     }
+
+    // Chat threads and encrypted messages
+    match /chat_threads/{threadId} {
+      allow read, write: if true;
+
+      match /messages/{messageId} {
+        allow read, write: if true;
+      }
+    }
+
+    match /reports/{reportId} {
+      allow read, write: if true;
+    }
+
+    match /ratings/{ratingId} {
+      allow read, write: if true;
+    }
+
+    match /appeals/{appealId} {
+      allow read, write: if true;
+    }
   }
 }
