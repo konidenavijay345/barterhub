@@ -47,16 +47,17 @@ export const auth = {
   },
 
   async logout() {
-    const token = sessionStorage.getItem("bh_tok");
+    const token = localStorage.getItem("bh_tok") || sessionStorage.getItem("bh_tok");
     await sessionDb.delete(token);
+    localStorage.removeItem("bh_tok");
     sessionStorage.removeItem("bh_tok");
   },
 
   async me() {
-    const token = sessionStorage.getItem("bh_tok");
+    const token = localStorage.getItem("bh_tok") || sessionStorage.getItem("bh_tok");
     if (!token) return null;
     const sess = await sessionDb.get(token);
-    if (!sess) { sessionStorage.removeItem("bh_tok"); return null; }
+    if (!sess) { localStorage.removeItem("bh_tok"); sessionStorage.removeItem("bh_tok"); return null; }
     return await userDb.getById(sess.userId);
   },
 
@@ -67,6 +68,18 @@ export const auth = {
     if (oldHash !== user.hash) throw new Error("Current password is incorrect");
     const newHash = await sha256(newPw + SALT);
     await userDb.update(userId, { hash: newHash });
+  },
+
+  async resetPasswordByIdentity(username, email, newPw) {
+    const allUsers = await userDb.getAll();
+    const user = allUsers.find(
+      u => u.username.toLowerCase() === username.toLowerCase().trim() &&
+           u.email.toLowerCase() === email.toLowerCase().trim()
+    );
+    if (!user) throw new Error("No account matched that username and email");
+    if (newPw.length < 6) throw new Error("Password must be at least 6 characters");
+    const newHash = await sha256(newPw + SALT);
+    await userDb.update(user.id, { hash: newHash, passwordResetAt: new Date().toISOString() });
   },
 
  async seedAdmin() {
