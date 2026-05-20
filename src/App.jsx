@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { auth } from "./auth";
-import { userDb, listingDb, exchangeDb, analyticsDb, chatDb, reportDb, ratingDb, appealDb } from "./database";
+import { userDb, listingDb, exchangeDb, analyticsDb, chatDb, reportDb, ratingDb, appealDb, notificationDb } from "./database";
 import { trackPageView, trackCTA, trackEvent } from "./analytics";
 
 const CATEGORIES = ["Electronics","Clothing","Books","Tools","Furniture","Food","Art","Sports","Vehicles","Other"];
@@ -1098,7 +1098,7 @@ function ChatsPage({ user, users, listings, exchanges, selectedThreadId, onNavig
             <>
               <div style={{ padding: "12px 14px", borderBottom: "0.5px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
                 <div>
-                  <p style={{ margin: 0, fontSize: 14, fontWeight: 500 }}>{other?.username || "User"} {otherIsTyping ? <span style={{ color: "#16a34a", fontSize: 12 }}>typing...</span> : null}</p>
+                  <p style={{ margin: 0, fontSize: 14, fontWeight: 500 }}>{other?.username || "User"}</p>
                   <p style={{ margin: 0, fontSize: 12, color: "#6b7280" }}>{listing?.title || "Exchange chat"}</p>
                 </div>
                 <span style={{ fontSize: 11, color: blocked ? "#991b1b" : "#6b7280", background: blocked ? "#fee2e2" : "#f9fafb", borderRadius: 20, padding: "3px 8px" }}>{dailyCount}/{CHAT_DAILY_LIMIT} today</span>
@@ -1124,6 +1124,13 @@ function ChatsPage({ user, users, listings, exchanges, selectedThreadId, onNavig
                     </div>
                   );
                 })}
+                {otherIsTyping && (
+                  <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 8 }}>
+                    <div style={{ maxWidth: "72%", background: "#fff", color: "#6b7280", border: "0.5px solid #e5e7eb", borderRadius: 10, padding: "8px 10px", fontSize: 13, fontStyle: "italic" }}>
+                      {other?.username || "User"} is typing...
+                    </div>
+                  </div>
+                )}
               </div>
               <div style={{ padding: 12, borderTop: "0.5px solid #f3f4f6" }}>
                 <Alert type="error" msg={err || (blocked ? "Daily chat limit reached. Messaging unlocks again tomorrow." : "")} onClose={() => setErr("")} />
@@ -1410,6 +1417,26 @@ function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals
   async function deleteListing(id) { if (!confirm("Delete this listing?")) return; await listingDb.delete(id); onRefresh(); }
   async function deleteExchange(id) { await exchangeDb.delete(id); onRefresh(); }
   async function resolveReport(id) { await reportDb.update(id, { status: "resolved", resolvedBy: user.id }); onRefresh(); }
+  async function sendReportFeedback(report) {
+    const feedback = prompt("Feedback to send to the reporter");
+    if (!feedback?.trim()) return;
+    await reportDb.update(report.id, {
+      adminFeedback: feedback.trim(),
+      feedbackBy: user.id,
+      feedbackAt: new Date().toISOString(),
+      status: report.status === "open" ? "reviewed" : report.status,
+    });
+    if (report.reporterId) {
+      await notificationDb.create({
+        userId: report.reporterId,
+        type: "report_feedback",
+        title: "Report reviewed",
+        message: feedback.trim(),
+        reportId: report.id,
+      });
+    }
+    onRefresh();
+  }
   async function suspendFromReport(report) {
     if (!report.reportedUserId) return;
     await userDb.update(report.reportedUserId, { active: false, suspendedAt: new Date().toISOString(), suspensionReason: report.reason || "report" });
@@ -1474,6 +1501,7 @@ function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals
                   <p style={{ margin: "8px 0", fontSize: 13, color: "#374151" }}>{report.details}</p>
                   {report.listingTitle && <p style={{ margin: "0 0 8px", fontSize: 12, color: "#6b7280" }}>Listing: {report.listingTitle}</p>}
                   {report.messageText && <p style={{ margin: "0 0 8px", fontSize: 12, color: "#991b1b" }}>Reported message: {report.messageText}</p>}
+                  {report.adminFeedback && <p style={{ margin: "0 0 8px", fontSize: 12, color: "#065f46" }}>Admin feedback: {report.adminFeedback}</p>}
                   {Array.isArray(report.conversationSnapshot) && (
                     <div style={{ background: "#f9fafb", borderRadius: 8, padding: 10, marginBottom: 8, maxHeight: 220, overflow: "auto" }}>
                       {report.conversationSnapshot.map((m, i) => <p key={i} style={{ margin: "0 0 6px", fontSize: 12, color: "#374151" }}><strong>{m.senderName}:</strong> {m.text}</p>)}
@@ -1482,6 +1510,7 @@ function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {report.listingId && <button onClick={() => removeReportedListing(report)} style={{ padding: "5px 10px", background: "#fee2e2", border: "0.5px solid #fca5a5", color: "#991b1b", borderRadius: 8, fontSize: 12 }}>Remove post</button>}
                     {report.reportedUserId && <button onClick={() => suspendFromReport(report)} style={{ padding: "5px 10px", background: "#111827", color: "white", border: "none", borderRadius: 8, fontSize: 12 }}>Suspend user</button>}
+                    <button onClick={() => sendReportFeedback(report)} style={{ padding: "5px 10px", background: "#eff6ff", border: "0.5px solid #bfdbfe", color: "#2563eb", borderRadius: 8, fontSize: 12 }}>Send feedback</button>
                     <button onClick={() => resolveReport(report.id)} style={{ padding: "5px 10px", background: "#f9fafb", border: "0.5px solid #e5e7eb", borderRadius: 8, fontSize: 12 }}>Mark resolved</button>
                   </div>
                 </div>
