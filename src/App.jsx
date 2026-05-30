@@ -243,27 +243,32 @@ function ListingCard({ listing, users, onClick, page, currentUser }) {
   const owner = users.find(u => u.id === listing.userId);
   return (
     <div
+      className="listing-card"
       onClick={() => { trackCTA(`listing_card_${listing.title}`, page, currentUser?.id); onClick(listing); }}
-      style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, overflow: "hidden", cursor: "pointer", transition: "border-color 0.15s, transform 0.15s, box-shadow 0.15s" }}
-      onMouseEnter={e => { e.currentTarget.style.borderColor = "#d1d5db"; e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.08)"; }}
-      onMouseLeave={e => { e.currentTarget.style.borderColor = "#f3f4f6"; e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; }}
     >
-      <div style={{ height: 180, overflow: "hidden", background: "#f9fafb", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div className="listing-media">
         {listing.imageBase64
-          ? <img src={listing.imageBase64} alt={listing.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-          : <span style={{ fontSize: 48, color: "#9ca3af" }}>📦</span>}
+          ? <img src={listing.imageBase64} alt={listing.title} />
+          : (
+            <div className="default-listing-art" aria-hidden="true">
+              <div className="art-ring"></div>
+              <div className="art-box"><span></span><span></span></div>
+              <div className="art-coin">$</div>
+              <div className="art-spark"></div>
+            </div>
+          )}
       </div>
-      <div style={{ padding: "12px 14px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6, gap: 8 }}>
-          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500, flex: 1, lineHeight: 1.3 }}>{listing.title}</h3>
+      <div className="listing-body">
+        <div className="listing-title-row">
+          <h3>{listing.title}</h3>
           <Badge status={listing.status} />
         </div>
-        <p style={{ margin: "0 0 8px", fontSize: 13, color: "#6b7280", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{listing.description}</p>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-          <span style={{ fontSize: 11, color: "#9ca3af" }}>{owner?.username || "Unknown"} · {timeAgo(listing.createdAt)}</span>
-          <span style={{ fontSize: 11, background: "#f9fafb", padding: "2px 8px", borderRadius: 20, color: "#6b7280" }}>{listing.category}</span>
+        <p className="listing-desc">{listing.description}</p>
+        <div className="listing-meta">
+          <span>{owner?.username || "Unknown"} · {timeAgo(listing.createdAt)}</span>
+          <span>{listing.category}</span>
         </div>
-        <div style={{ fontSize: 12, color: "#d97706", fontStyle: "italic", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>Wants: {listing.wantInReturn}</div>
+        <div className="listing-wants">Wants: {listing.wantInReturn}</div>
       </div>
     </div>
   );
@@ -482,58 +487,86 @@ function HomePage({ onNavigate, listings, users, currentUser, onUserUpdate, appC
     onUserUpdate({ ...currentUser, messagingBannerSeen: true });
   }
   return (
-    <div>
-      <div style={{ background: "linear-gradient(135deg,#78350f 0%,#d97706 100%)", padding: "4rem 2rem", textAlign: "center", color: "white" }}>
-        <h1 style={{ margin: "0 0 1rem", fontSize: 34, fontWeight: 500, fontFamily: "Georgia, serif", lineHeight: 1.3 }}>Trade What You Have.<br />Get What You Need.</h1>
-        <p style={{ margin: "0 0 2rem", fontSize: 15, opacity: 0.9, maxWidth: 480, marginLeft: "auto", marginRight: "auto" }}>A community marketplace for bartering goods — no money needed.</p>
-        <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-          <button onClick={() => { trackCTA("hero_browse_listings", "home", currentUser?.id); onNavigate("browse"); }}
-            style={{ padding: "11px 28px", background: "white", color: "#92400e", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 15, fontWeight: 500 }}>
+    <div className="landing-page">
+      <section className="barter-hero">
+        <div className="barter-hero-copy">
+          <p className="hero-kicker">Community barter marketplace</p>
+          <h1>Barter smarter, swap happier.</h1>
+          <p>Post what you have, discover what you need, and make trusted exchanges with chats, ratings, and moderation built in.</p>
+          <div className="hero-points">
+            <span>Free local swaps</span>
+            <span>Encrypted exchange chats</span>
+            <span>Rated community profiles</span>
+          </div>
+          <div className="hero-actions">
+            <button onClick={() => { trackCTA("hero_browse_listings", "home", currentUser?.id); onNavigate("browse"); }}
+              className="brand-btn brand-btn-primary">
             Browse listings
-          </button>
-          <button onClick={() => { trackCTA("hero_post_item", "home", currentUser?.id); onNavigate("post"); }}
-            style={{ padding: "11px 28px", background: "transparent", color: "white", border: "1.5px solid rgba(255,255,255,0.7)", borderRadius: 8, cursor: "pointer", fontSize: 15, fontWeight: 500 }}>
+            </button>
+            <button onClick={() => { trackCTA("hero_post_item", "home", currentUser?.id); onNavigate("post"); }}
+              className="brand-btn brand-btn-secondary">
             Post an item
-          </button>
+            </button>
+          </div>
         </div>
-      </div>
+        <div className="barter-visual" aria-hidden="true">
+          <div className="swap-ring ring-a"></div>
+          <div className="swap-ring ring-b"></div>
+          <div className="swap-item swap-item-a"></div>
+          <div className="swap-item swap-item-b"></div>
+          <div className="swap-hand hand-top"></div>
+          <div className="swap-hand hand-bottom"></div>
+          <div className="swap-box"><span></span><span></span><span></span></div>
+          <div className="chat-illustration">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <div className="swap-tag">$</div>
+          <div className="spark spark-one"></div>
+          <div className="spark spark-two"></div>
+          <div className="dot dot-one"></div>
+          <div className="dot dot-two"></div>
+          <div className="dot dot-three"></div>
+        </div>
+      </section>
 
       {canUseChat(currentUser, appConfig) && !currentUser.messagingBannerSeen && (
-        <div style={{ maxWidth: 900, margin: "1.25rem auto 0", padding: "0 1rem" }}>
-          <div style={{ background: "#111827", color: "white", borderRadius: 10, padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <div className="chat-launch-wrap">
+          <div className="chat-launch-banner">
             <div>
-              <p style={{ margin: 0, fontSize: 14, fontWeight: 500 }}>Encrypted chats are now live</p>
-              <p style={{ margin: "2px 0 0", fontSize: 12, color: "#d1d5db" }}>Accepted exchanges can now continue in a private chat with typing status.</p>
+              <p>Encrypted chats are now live</p>
+              <span>Accepted exchanges can now continue in a private chat with typing status.</span>
             </div>
-            <button onClick={dismissChatBanner} style={{ background: "rgba(255,255,255,0.12)", color: "white", border: "0.5px solid rgba(255,255,255,0.3)", borderRadius: 8, padding: "6px 10px", fontSize: 12 }}>Dismiss</button>
+            <button onClick={dismissChatBanner}>Dismiss</button>
           </div>
         </div>
       )}
 
-      <div style={{ padding: "3rem 2rem", maxWidth: 900, margin: "0 auto" }}>
-        <h2 style={{ textAlign: "center", marginBottom: "2rem", fontSize: 20, fontWeight: 500, fontFamily: "Georgia, serif" }}>How it works</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 20 }}>
+      <div className="landing-section">
+        <h2>How it works</h2>
+        <div className="how-grid">
           {[
             { icon: "📸", title: "Post your item",  desc: "List what you have with a photo and description" },
             { icon: "🔍", title: "Browse offers",   desc: "Find items you want from the community" },
             { icon: "🤝", title: "Make an offer",   desc: "Propose what you'll give in return" },
             { icon: "✅", title: "Swap!",           desc: "Meet and exchange your items" },
           ].map((s, i) => (
-            <div key={i} style={{ textAlign: "center", padding: "1.5rem 1rem", background: "#f9fafb", borderRadius: 12 }}>
-              <div style={{ fontSize: 28, marginBottom: 10 }}>{s.icon}</div>
-              <h3 style={{ margin: "0 0 6px", fontSize: 14, fontWeight: 500 }}>{s.title}</h3>
-              <p style={{ margin: 0, fontSize: 13, color: "#6b7280" }}>{s.desc}</p>
+            <div key={i} className="how-card">
+              <div>{s.icon}</div>
+              <h3>{s.title}</h3>
+              <p>{s.desc}</p>
             </div>
           ))}
         </div>
       </div>
 
       {featured.length > 0 && (
-        <div style={{ padding: "0 2rem 3rem", maxWidth: 900, margin: "0 auto" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 500, fontFamily: "Georgia, serif" }}>Recent listings</h2>
+        <div className="landing-section listings-section">
+          <div className="section-head">
+            <h2>Recent listings</h2>
             <button onClick={() => { trackCTA("home_see_all", "home", currentUser?.id); onNavigate("browse"); }}
-              style={{ background: "none", border: "none", color: "#d97706", cursor: "pointer", fontSize: 14 }}>See all →</button>
+              className="text-action">See all →</button>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
             {featured.map(l => (
@@ -1748,14 +1781,15 @@ function Navbar({ user, page, appConfig, onNavigate, onLogout }) {
     ] : []),
   ];
   return (
-    <nav style={{ background: "#fff", borderBottom: "0.5px solid #f3f4f6", padding: "0 1.25rem", display: "flex", alignItems: "center", justifyContent: "space-between", height: 52, position: "sticky", top: 0, zIndex: 100 }}>
-      <button onClick={() => onNavigate("home")} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
-        <span style={{ fontSize: 20 }}>⚖️</span>
-        <span style={{ fontSize: 16, fontWeight: 500, fontFamily: "Georgia, serif", color: "#d97706" }}>BarterHub</span>
+    <nav className="app-nav" style={{ background: "#fff", borderBottom: "0.5px solid #f3f4f6", padding: "0 1.25rem", display: "flex", alignItems: "center", justifyContent: "space-between", height: 52, position: "sticky", top: 0, zIndex: 100 }}>
+      <button className="brand-mark" onClick={() => onNavigate("home")} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+        <span>BH</span>
+        <strong>BarterHub</strong>
       </button>
-      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+      <div className="nav-links" style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
         {navItems.map(n => (
           <button key={n.id} onClick={() => { trackCTA(`nav_${n.id}`, page, user?.id); onNavigate(n.id); }}
+            className={page === n.id ? "nav-item-active" : ""}
             style={{ padding: "6px 10px", background: page === n.id ? "#f9fafb" : "none", border: "none", cursor: "pointer", fontSize: 13, borderRadius: 8, color: n.id === "admin" ? "#d97706" : "#111827", fontWeight: n.id === "admin" ? 500 : 400 }}>
             {n.l}
           </button>
@@ -1765,9 +1799,9 @@ function Navbar({ user, page, appConfig, onNavigate, onLogout }) {
               <span style={{ width: 22, height: 22, borderRadius: "50%", background: "#d97706", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 500, flexShrink: 0 }}>{user.username[0].toUpperCase()}</span>
               <span>{user.username}</span>
             </button>
-          : <div style={{ display: "flex", gap: 6, marginLeft: 4 }}>
-              <button onClick={() => { trackCTA("nav_sign_in", page); onNavigate("login"); }} style={{ padding: "6px 14px", background: "none", border: "0.5px solid #e5e7eb", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>Sign in</button>
-              <button onClick={() => { trackCTA("nav_register", page); onNavigate("register"); }} style={{ padding: "6px 14px", background: "#d97706", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>Register</button>
+          : <div className="nav-auth-actions" style={{ display: "flex", gap: 6, marginLeft: 4 }}>
+              <button className="nav-auth-secondary" onClick={() => { trackCTA("nav_sign_in", page); onNavigate("login"); }} style={{ padding: "6px 14px", background: "none", border: "0.5px solid #e5e7eb", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>Sign in</button>
+              <button className="nav-auth-primary" onClick={() => { trackCTA("nav_register", page); onNavigate("register"); }} style={{ padding: "6px 14px", background: "#d97706", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13 }}>Register</button>
             </div>}
       </div>
     </nav>
@@ -1842,7 +1876,7 @@ export default function App() {
   );
 
   return (
-    <div style={{ minHeight: "100vh", background: darkMode ? "#111827" : "#f3f4f6" }}>
+    <div style={{ minHeight: "100vh", background: darkMode ? "#111827" : "var(--brand-teal)" }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <Navbar user={user} page={page} appConfig={appConfig} onNavigate={navigate} onLogout={handleLogout} />
       <main>
