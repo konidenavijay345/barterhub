@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="BarterHub icon">
+  <rect width="128" height="128" rx="30" fill="#08b8d6"/>
+  <circle cx="64" cy="64" r="48" fill="#ffffff" stroke="#24242d" stroke-width="6"/>
+  <path d="M38 48c9-14 29-19 45-11" fill="none" stroke="#08b8d6" stroke-width="10" stroke-linecap="round"/>
+  <path d="M83 37l1 20 17-11z" fill="#08b8d6" stroke="#24242d" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M90 80c-9 14-29 19-45 11" fill="none" stroke="#08b8d6" stroke-width="10" stroke-linecap="round"/>
+  <path d="M45 91l-1-20-17 11z" fill="#08b8d6" stroke="#24242d" stroke-width="4" stroke-linejoin="round"/>
+  <rect x="42" y="45" width="44" height="34" rx="8" fill="#f35f9c" stroke="#24242d" stroke-width="5"/>
+  <path d="M51 45v-9h26v9" fill="#ffd429" stroke="#24242d" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M53 58h22M53 68h16" stroke="#24242d" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="89" cy="87" r="16" fill="#ffd429" stroke="#24242d" stroke-width="5"/>
+  <path d="M89 77v20M83 83c2-4 12-4 12 2 0 7-12 3-12 10 0 5 10 5 13 1" fill="none" stroke="#24242d" stroke-width="4" stroke-linecap="round"/>
+</svg>
