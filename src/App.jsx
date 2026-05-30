@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { auth } from "./auth";
-import { userDb, listingDb, exchangeDb, analyticsDb, chatDb, reportDb, ratingDb, appealDb, notificationDb } from "./database";
+import { userDb, listingDb, exchangeDb, analyticsDb, chatDb, reportDb, ratingDb, appealDb, notificationDb, appConfigDb } from "./database";
 import { trackPageView, trackCTA, trackEvent } from "./analytics";
 
 const CATEGORIES = ["Electronics","Clothing","Books","Tools","Furniture","Food","Art","Sports","Vehicles","Other"];
@@ -25,10 +25,29 @@ function publicUserId(user) {
   return user?.encryptedId || "Pending ID";
 }
 
+function canUseChat(user, appConfig) {
+  return Boolean(user) && appConfig.chatEnabled !== false && user.chatDisabled !== true;
+}
+
 function avgRating(items, selector) {
   const values = items.map(selector).filter(v => Number(v) > 0);
   if (!values.length) return null;
   return values.reduce((sum, v) => sum + Number(v), 0) / values.length;
+}
+
+function groupNotifications(items) {
+  const now = Date.now();
+  const todayKey = new Date().toDateString();
+  const groups = { Today: [], "Last 7 days": [], "Last 30 days": [], Older: [] };
+  items.forEach(n => {
+    const t = n.createdAt ? new Date(n.createdAt).getTime() : 0;
+    const age = now - t;
+    if (new Date(t).toDateString() === todayKey) groups.Today.push(n);
+    else if (age <= 7 * 24 * 60 * 60 * 1000) groups["Last 7 days"].push(n);
+    else if (age <= 30 * 24 * 60 * 60 * 1000) groups["Last 30 days"].push(n);
+    else groups.Older.push(n);
+  });
+  return groups;
 }
 
 function chatSecret(thread) {
@@ -455,7 +474,7 @@ function SettingsPage({ darkMode, onDarkModeChange }) {
   );
 }
 
-function HomePage({ onNavigate, listings, users, currentUser, onUserUpdate }) {
+function HomePage({ onNavigate, listings, users, currentUser, onUserUpdate, appConfig }) {
   const featured = listings.filter(l => l.status === "available").slice(0, 6);
   async function dismissChatBanner() {
     if (!currentUser) return;
@@ -479,7 +498,7 @@ function HomePage({ onNavigate, listings, users, currentUser, onUserUpdate }) {
         </div>
       </div>
 
-      {currentUser && !currentUser.messagingBannerSeen && (
+      {canUseChat(currentUser, appConfig) && !currentUser.messagingBannerSeen && (
         <div style={{ maxWidth: 900, margin: "1.25rem auto 0", padding: "0 1rem" }}>
           <div style={{ background: "#111827", color: "white", borderRadius: 10, padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
             <div>
@@ -642,7 +661,7 @@ function PostItemPage({ user, onPosted, onNavigate }) {
   );
 }
 
-function ItemDetailPage({ listingId, listings, users, exchanges, ratings, user, onNavigate, onRefresh, onReportCreated }) {
+function ItemDetailPage({ listingId, listings, users, exchanges, ratings, user, appConfig, onNavigate, onRefresh, onReportCreated }) {
   const listing = listings.find(l => l.id === listingId);
   const [offerForm, setOfferForm] = useState({ title: "", description: "" });
   const [offerImage, setOfferImage] = useState(null);
@@ -687,7 +706,8 @@ function ItemDetailPage({ listingId, listings, users, exchanges, ratings, user, 
     await exchangeDb.update(exId, { status });
     if (status === "accepted") {
       await listingDb.update(listing.id, { status: "exchanged" });
-      await chatDb.ensureThreadForExchange(ex, { ...listing, ownerUsername: owner?.username });
+      const offerer = users.find(u => u.id === ex?.offererId);
+      if (canUseChat(user, appConfig) && canUseChat(offerer, appConfig)) await chatDb.ensureThreadForExchange(ex, { ...listing, ownerUsername: owner?.username });
     }
     onRefresh();
   }
@@ -817,7 +837,7 @@ function ItemDetailPage({ listingId, listings, users, exchanges, ratings, user, 
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, gap: 8 }}><strong style={{ fontSize: 14 }}>{ex.offerTitle}</strong><Badge status={ex.status} /></div>
                   <p style={{ margin: "0 0 4px", fontSize: 13, color: "#6b7280" }}>{ex.offerDescription}</p>
-                  {ex.status === "accepted" && (
+                  {ex.status === "accepted" && canUseChat(user, appConfig) && canUseChat(offerer, appConfig) && (
                     <button onClick={() => onNavigate("chat", `exchange_${ex.id}`)} style={{ marginBottom: 6, padding: "5px 12px", background: "#111827", border: "none", color: "white", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>Open chat</button>
                   )}
                   <p style={{ margin: "0 0 8px", fontSize: 12, color: "#9ca3af" }}>by {offerer?.username} · {timeAgo(ex.createdAt)}</p>
@@ -876,7 +896,7 @@ function MyListingsPage({ user, listings, exchanges, onNavigate, onRefresh }) {
   );
 }
 
-function MyExchangesPage({ user, listings, exchanges, users, ratings, onNavigate, onRated }) {
+function MyExchangesPage({ user, listings, exchanges, users, ratings, appConfig, onNavigate, onRated }) {
   if (!user) return <div style={{ textAlign: "center", padding: "4rem" }}><button onClick={() => onNavigate("login")} style={{ color: "#d97706", background: "none", border: "none", cursor: "pointer" }}>Sign in →</button></div>;
   const myOffers = exchanges.filter(e => e.offererId === user.id);
   return (
@@ -895,6 +915,9 @@ function MyExchangesPage({ user, listings, exchanges, users, ratings, onNavigate
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}><span style={{ fontSize: 14, fontWeight: 500 }}>You offered: {ex.offerTitle}</span><Badge status={ex.status} /></div>
                   <p style={{ margin: "0 0 4px", fontSize: 13, color: "#6b7280" }}>{ex.offerDescription}</p>
+                  {ex.status === "accepted" && canUseChat(user, appConfig) && canUseChat(targetUser, appConfig) && listing && (
+                    <button onClick={() => onNavigate("chat", `exchange_${ex.id}`)} style={{ margin: "8px 0", padding: "5px 12px", background: "#111827", border: "none", color: "white", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>Open chat</button>
+                  )}
                   {ex.status === "accepted" && listing && (
                     <RatingBox exchange={ex} listing={listing} user={user} targetUser={targetUser} existing={existingRating} onRated={onRated} />
                   )}
@@ -907,7 +930,7 @@ function MyExchangesPage({ user, listings, exchanges, users, ratings, onNavigate
   );
 }
 
-function ChatsPage({ user, users, listings, exchanges, selectedThreadId, onNavigate, onUserUpdate }) {
+function ChatsPage({ user, users, listings, exchanges, selectedThreadId, appConfig, onNavigate, onUserUpdate }) {
   const [threads, setThreads] = useState([]);
   const [thread, setThread] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -965,6 +988,15 @@ function ChatsPage({ user, users, listings, exchanges, selectedThreadId, onNavig
   }, [plainMessages.length]);
 
   if (!user) return <div style={{ textAlign: "center", padding: "4rem" }}><button onClick={() => onNavigate("login")} style={{ color: "#d97706", background: "none", border: "none", cursor: "pointer" }}>Sign in to chat</button></div>;
+  if (!canUseChat(user, appConfig)) return (
+    <div style={{ maxWidth: 640, margin: "4rem auto", padding: "0 1rem", textAlign: "center" }}>
+      <div style={{ background: "#fff", border: "0.5px solid #d8dee4", borderRadius: 8, padding: "2rem" }}>
+        <h1 style={{ margin: "0 0 8px", fontSize: 22, fontWeight: 600 }}>Chats are temporarily disabled</h1>
+        <p style={{ margin: "0 0 16px", color: "#57606a", fontSize: 14 }}>{appConfig.chatEnabled === false ? "The admin team has turned off chat while we tune the experience." : "Chat is disabled for your account. Contact support if this feels wrong."}</p>
+        <button onClick={() => onNavigate("home")} style={{ padding: "8px 14px", background: "#1f883d", color: "white", border: "none", borderRadius: 6 }}>Back home</button>
+      </div>
+    </div>
+  );
   if (!user.chatTermsAcceptedAt) return <ChatTermsGate user={user} onAccept={onUserUpdate} onDecline={() => onNavigate("home")} />;
 
   const acceptedThreads = exchanges
@@ -975,6 +1007,7 @@ function ChatsPage({ user, users, listings, exchanges, selectedThreadId, onNavig
       if (listing.userId !== user.id && ex.offererId !== user.id) return null;
       const otherId = listing.userId === user.id ? ex.offererId : listing.userId;
       const other = users.find(u => u.id === otherId);
+      if (!canUseChat(other, appConfig)) return null;
       return { id: `exchange_${ex.id}`, exchange: ex, listing, other };
     })
     .filter(Boolean);
@@ -1205,6 +1238,49 @@ function ProfilePage({ user, onLogout }) {
   );
 }
 
+function NotificationsPage({ user, notifications, onNavigate, onRefresh }) {
+  if (!user) return <div style={{ textAlign: "center", padding: "4rem" }}><button onClick={() => onNavigate("login")} style={{ color: "#0969da", background: "none", border: "none" }}>Sign in to view notifications</button></div>;
+  const groups = groupNotifications(notifications);
+  async function markOne(id) {
+    await notificationDb.markRead(id);
+    await onRefresh();
+  }
+  async function markAll() {
+    await notificationDb.markAllRead(user.id);
+    await onRefresh();
+  }
+  return (
+    <div className="page-shell">
+      <div className="page-heading">
+        <div>
+          <h1>Notifications</h1>
+          <p>Updates from offers, moderation, reports, and account activity.</p>
+        </div>
+        <button className="btn-secondary" onClick={markAll}>Mark all read</button>
+      </div>
+      <div className="github-panel">
+        {Object.entries(groups).map(([label, items]) => (
+          <section key={label} className="notification-group">
+            <h2>{label}</h2>
+            {items.length === 0 ? (
+              <p className="empty-note">No notifications.</p>
+            ) : items.map(n => (
+              <div key={n.id} className={`notification-row ${n.read ? "" : "is-unread"}`}>
+                <div>
+                  <strong>{n.title || n.type || "Notification"}</strong>
+                  <p>{n.message || "No details provided."}</p>
+                  <span>{timeAgo(n.createdAt)}</span>
+                </div>
+                {!n.read && <button className="btn-link" onClick={() => markOne(n.id)}>Mark read</button>}
+              </div>
+            ))}
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Analytics Admin Section ───────────────────────────────────────────────────
 
 function AnalyticsPage({ users }) {
@@ -1402,13 +1478,18 @@ function AnalyticsPage({ users }) {
 
 // ── Admin Page ────────────────────────────────────────────────────────────────
 
-function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals, onRefresh, onNavigate }) {
+function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals, notifications, appConfig, onConfigChange, onRefresh, onNavigate }) {
   const [tab, setTab] = useState("analytics");
   if (!user || user.role !== "admin") return <div style={{ textAlign: "center", padding: "4rem" }}>Access denied. Admin only.</div>;
 
   async function toggleUser(id) {
     const target = users.find(u => u.id === id); if (!target) return;
     await userDb.update(id, { active: !target.active }); onRefresh();
+  }
+  async function toggleUserChat(id) {
+    const target = users.find(u => u.id === id); if (!target) return;
+    await userDb.update(id, { chatDisabled: target.chatDisabled !== true });
+    onRefresh();
   }
   async function deleteUser(id) {
     if (!confirm("Delete user and all their listings?")) return;
@@ -1454,12 +1535,19 @@ function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals
     await appealDb.update(appeal.id, { status: approved ? "approved" : "declined", reviewedBy: user.id });
     onRefresh();
   }
+  async function toggleChatFeature() {
+    const next = appConfig.chatEnabled === false;
+    const patch = { ...appConfig, chatEnabled: next };
+    await appConfigDb.update({ chatEnabled: next });
+    onConfigChange(patch);
+  }
 
   const stats = [
     { l: "Total users",    v: users.length },
     { l: "Total listings", v: listings.length },
     { l: "Available",      v: listings.filter(l => l.status === "available").length },
     { l: "Exchanges done", v: exchanges.filter(e => e.status === "accepted").length },
+    { l: "Notifications",  v: notifications.length },
   ];
 
   const TabBtn = ({ id, l }) => (
@@ -1469,7 +1557,7 @@ function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals
   return (
     <div style={{ maxWidth: 1000, margin: "2rem auto", padding: "0 1rem" }}>
       <h1 style={{ fontSize: 24, fontWeight: 500, fontFamily: "Georgia, serif", marginBottom: "1.5rem" }}>Admin dashboard</h1>
-      <div className="admin-stats-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 20 }}>
+      <div className="admin-stats-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 20 }}>
         {stats.map(s => (
           <div key={s.l} style={{ background: "#f9fafb", borderRadius: 8, padding: "1rem", textAlign: "center" }}>
             <p style={{ margin: "0 0 4px", fontSize: 12, color: "#6b7280" }}>{s.l}</p>
@@ -1483,6 +1571,8 @@ function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals
         <TabBtn id="listings"  l="📦 Listings" />
         <TabBtn id="exchanges" l="🤝 Exchanges" />
         <TabBtn id="moderation" l="Moderation" />
+        <TabBtn id="notifications" l="Notifications" />
+        <TabBtn id="features" l="Features" />
       </div>
 
       {tab === "analytics" && <AnalyticsPage users={users} />}
@@ -1540,11 +1630,47 @@ function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals
         </div>
       )}
 
-      {tab !== "analytics" && tab !== "moderation" && (
+      {tab === "notifications" && (
+        <div className="github-panel">
+          {Object.entries(groupNotifications(notifications)).map(([label, items]) => (
+            <section key={label} className="notification-group">
+              <h2>{label}</h2>
+              {items.length === 0 ? <p className="empty-note">No notifications.</p> : items.map(n => {
+                const recipient = users.find(u => u.id === n.userId);
+                return (
+                  <div key={n.id} className={`notification-row ${n.read ? "" : "is-unread"}`}>
+                    <div>
+                      <strong>{n.title || n.type || "Notification"}</strong>
+                      <p>{n.message || "No details provided."}</p>
+                      <span>{recipient?.username || "Unknown user"} · {timeAgo(n.createdAt)}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </section>
+          ))}
+        </div>
+      )}
+
+      {tab === "features" && (
+        <div className="github-panel" style={{ padding: 16 }}>
+          <div className="feature-toggle-row">
+            <div>
+              <h2>Global chat feature</h2>
+              <p>Master switch for chats. For individual users, use the Chat column in the Users tab.</p>
+            </div>
+            <button className={appConfig.chatEnabled === false ? "btn-secondary" : "btn-primary"} onClick={toggleChatFeature}>
+              {appConfig.chatEnabled === false ? "Enable chat" : "Disable chat"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {tab !== "analytics" && tab !== "moderation" && tab !== "notifications" && tab !== "features" && (
         <div style={{ background: "#fff", border: "0.5px solid #f3f4f6", borderRadius: 12, overflow: "auto" }}>
           {tab === "users" && (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-              <thead><tr style={{ background: "#f9fafb" }}>{["User","Email","Public ID","User ID","Role","Joined","Status","Actions"].map(h => <th key={h} style={{ padding: "10px 12px", textAlign: "left", fontWeight: 500, color: "#6b7280", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
+              <thead><tr style={{ background: "#f9fafb" }}>{["User","Email","Public ID","User ID","Role","Joined","Status","Chat","Actions"].map(h => <th key={h} style={{ padding: "10px 12px", textAlign: "left", fontWeight: 500, color: "#6b7280", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
               <tbody>{users.map(u => (
                 <tr key={u.id} style={{ borderTop: "0.5px solid #f9fafb" }}>
                   <td style={{ padding: "10px 12px", fontWeight: 500 }}>{u.username}</td>
@@ -1554,10 +1680,12 @@ function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals
                   <td style={{ padding: "10px 12px" }}><span style={{ fontSize: 11, background: u.role === "admin" ? "#d97706" : "#f9fafb", color: u.role === "admin" ? "white" : "#6b7280", padding: "2px 8px", borderRadius: 20 }}>{u.role}</span></td>
                   <td style={{ padding: "10px 12px", color: "#6b7280" }}>{new Date(u.joined).toLocaleDateString()}</td>
                   <td style={{ padding: "10px 12px" }}><span style={{ fontSize: 11, background: u.active ? "#d1fae5" : "#fee2e2", color: u.active ? "#065f46" : "#991b1b", padding: "2px 8px", borderRadius: 20 }}>{u.active ? "Active" : "Suspended"}</span></td>
+                  <td style={{ padding: "10px 12px" }}><span style={{ fontSize: 11, background: u.chatDisabled ? "#fee2e2" : "#d1fae5", color: u.chatDisabled ? "#991b1b" : "#065f46", padding: "2px 8px", borderRadius: 20 }}>{u.chatDisabled ? "Off" : "On"}</span></td>
                   <td style={{ padding: "10px 12px" }}>
                     {u.id !== user.id && (
                       <div style={{ display: "flex", gap: 6 }}>
                         <button onClick={() => toggleUser(u.id)} style={{ padding: "4px 8px", fontSize: 11, borderRadius: 6, border: "0.5px solid #e5e7eb", cursor: "pointer", background: "#f9fafb", whiteSpace: "nowrap" }}>{u.active ? "Suspend" : "Restore"}</button>
+                        <button onClick={() => toggleUserChat(u.id)} style={{ padding: "4px 8px", fontSize: 11, borderRadius: 6, border: "0.5px solid #e5e7eb", cursor: "pointer", background: "#f9fafb", whiteSpace: "nowrap" }}>{u.chatDisabled ? "Chat on" : "Chat off"}</button>
                         <button onClick={() => deleteUser(u.id)} style={{ padding: "4px 8px", fontSize: 11, borderRadius: 6, border: "0.5px solid #fca5a5", background: "#fee2e2", color: "#991b1b", cursor: "pointer" }}>Delete</button>
                       </div>
                     )}
@@ -1606,14 +1734,15 @@ function AdminPage({ user, listings, exchanges, users, reports, ratings, appeals
 
 // ── Navbar ────────────────────────────────────────────────────────────────────
 
-function Navbar({ user, page, onNavigate, onLogout }) {
+function Navbar({ user, page, appConfig, onNavigate, onLogout }) {
   const navItems = [
     { id: "browse", l: "Browse" },
-    ...(user ? [
+      ...(user ? [
       { id: "post", l: "Post item" },
       { id: "my-listings", l: "My listings" },
       { id: "my-exchanges", l: "Exchanges" },
-      { id: "chats", l: "Chats" },
+      ...(canUseChat(user, appConfig) ? [{ id: "chats", l: "Chats" }] : []),
+      { id: "notifications", l: "Notifications" },
       { id: "settings", l: "Settings" },
       ...(user.role === "admin" ? [{ id: "admin", l: "Admin ★" }] : []),
     ] : []),
@@ -1656,13 +1785,15 @@ export default function App() {
   const [reports, setReports] = useState([]);
   const [ratings, setRatings] = useState([]);
   const [appeals, setAppeals] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [appConfig, setAppConfig] = useState({ chatEnabled: true });
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("bh_dark_mode") === "true");
 
   async function loadAll() {
-    const [u, l, e, r, rate, a] = await Promise.all([userDb.getAll(), listingDb.getAll(), exchangeDb.getAll(), reportDb.getAll(), ratingDb.getAll(), appealDb.getAll()]);
-    setUsers(u); setListings(l); setExchanges(e); setReports(r); setRatings(rate); setAppeals(a);
+    const [u, l, e, r, rate, a, n, cfg] = await Promise.all([userDb.getAll(), listingDb.getAll(), exchangeDb.getAll(), reportDb.getAll(), ratingDb.getAll(), appealDb.getAll(), notificationDb.getAll(), appConfigDb.get()]);
+    setUsers(u); setListings(l); setExchanges(e); setReports(r); setRatings(rate); setAppeals(a); setNotifications(n); setAppConfig(cfg);
   }
 
   useEffect(() => {
@@ -1713,19 +1844,20 @@ export default function App() {
   return (
     <div style={{ minHeight: "100vh", background: darkMode ? "#111827" : "#f3f4f6" }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      <Navbar user={user} page={page} onNavigate={navigate} onLogout={handleLogout} />
+      <Navbar user={user} page={page} appConfig={appConfig} onNavigate={navigate} onLogout={handleLogout} />
       <main>
-        {page === "home"         && <HomePage onNavigate={navigate} listings={listings} users={users} currentUser={user} onUserUpdate={setUser} />}
+        {page === "home"         && <HomePage onNavigate={navigate} listings={listings} users={users} currentUser={user} appConfig={appConfig} onUserUpdate={setUser} />}
         {page === "browse"       && <BrowsePage listings={listings} users={users} onNavigate={navigate} currentUser={user} />}
         {page === "post"         && <PostItemPage user={user} onPosted={loadAll} onNavigate={navigate} />}
-        {page === "item"         && <ItemDetailPage listingId={pageParam} listings={listings} users={users} exchanges={exchanges} ratings={ratings} user={user} onNavigate={navigate} onRefresh={loadAll} onReportCreated={loadAll} />}
+        {page === "item"         && <ItemDetailPage listingId={pageParam} listings={listings} users={users} exchanges={exchanges} ratings={ratings} user={user} appConfig={appConfig} onNavigate={navigate} onRefresh={loadAll} onReportCreated={loadAll} />}
         {page === "my-listings"  && <MyListingsPage user={user} listings={listings} exchanges={exchanges} onNavigate={navigate} onRefresh={loadAll} />}
-        {page === "my-exchanges" && <MyExchangesPage user={user} listings={listings} exchanges={exchanges} users={users} ratings={ratings} onNavigate={navigate} onRated={loadAll} />}
-        {page === "chats"        && <ChatsPage user={user} listings={listings} exchanges={exchanges} users={users} selectedThreadId={null} onNavigate={navigate} onUserUpdate={setUser} />}
-        {page === "chat"         && <ChatsPage user={user} listings={listings} exchanges={exchanges} users={users} selectedThreadId={pageParam} onNavigate={navigate} onUserUpdate={setUser} />}
+        {page === "my-exchanges" && <MyExchangesPage user={user} listings={listings} exchanges={exchanges} users={users} ratings={ratings} appConfig={appConfig} onNavigate={navigate} onRated={loadAll} />}
+        {page === "chats"        && <ChatsPage user={user} listings={listings} exchanges={exchanges} users={users} selectedThreadId={null} appConfig={appConfig} onNavigate={navigate} onUserUpdate={setUser} />}
+        {page === "chat"         && <ChatsPage user={user} listings={listings} exchanges={exchanges} users={users} selectedThreadId={pageParam} appConfig={appConfig} onNavigate={navigate} onUserUpdate={setUser} />}
+        {page === "notifications" && <NotificationsPage user={user} notifications={notifications.filter(n => n.userId === user?.id)} onNavigate={navigate} onRefresh={loadAll} />}
         {page === "settings"     && <SettingsPage darkMode={darkMode} onDarkModeChange={setDarkMode} />}
         {page === "profile"      && <ProfilePage user={user} onLogout={handleLogout} />}
-        {page === "admin"        && <AdminPage user={user} listings={listings} exchanges={exchanges} users={users} reports={reports} ratings={ratings} appeals={appeals} onRefresh={loadAll} onNavigate={navigate} />}
+        {page === "admin"        && <AdminPage user={user} listings={listings} exchanges={exchanges} users={users} reports={reports} ratings={ratings} appeals={appeals} notifications={notifications} appConfig={appConfig} onConfigChange={setAppConfig} onRefresh={loadAll} onNavigate={navigate} />}
         {page === "login"        && <LoginPage onLogin={handleLogin} onNavigate={navigate} />}
         {page === "register"     && <RegisterPage onLogin={handleLogin} onNavigate={navigate} />}
         {page === "reset-password" && <ResetPasswordPage onNavigate={navigate} />}

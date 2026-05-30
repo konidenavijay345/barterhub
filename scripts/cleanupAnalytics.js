@@ -1,4 +1,5 @@
 import { initializeApp } from "firebase/app";
+import { firebaseConfig } from "./firebaseConfig.js";
 import {
   getFirestore,
   collection,
@@ -7,15 +8,6 @@ import {
   where,
   deleteDoc,
 } from "firebase/firestore";
-
-const firebaseConfig = {
-  apiKey: "AIzaSyA2XBJuywzCZd1BGMRKrex-IGDcmKrAp1M",
-  authDomain: "barterhub-2cd8f.firebaseapp.com",
-  projectId: "barterhub-2cd8f",
-  storageBucket: "barterhub-2cd8f.firebasestorage.app",
-  messagingSenderId: "207157786096",
-  appId: "1:207157786096:web:b11e4f54af6ff5831cd935",
-};
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);

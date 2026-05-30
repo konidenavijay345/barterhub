@@ -63,5 +63,9 @@ service cloud.firestore {
     match /appeals/{appealId} {
       allow read, write: if true;
     }
+
+    match /app_config/{configId} {
+      allow read, write: if true;
+    }
   }
 }
