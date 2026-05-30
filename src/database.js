@@ -499,6 +499,27 @@ export const appealDb = {
   },
 };
 
+export const appConfigDb = {
+  async get() {
+    try {
+      const snap = await getDoc(doc(db, "app_config", "features"));
+      return snap.exists() ? { id: snap.id, ...snap.data() } : { chatEnabled: true };
+    } catch (e) {
+      console.error("appConfigDb.get failed:", e);
+      return { chatEnabled: true };
+    }
+  },
+
+  async update(data) {
+    try {
+      await setDoc(doc(db, "app_config", "features"), { ...data, updatedAt: new Date().toISOString() }, { merge: true });
+    } catch (e) {
+      console.error("appConfigDb.update failed:", e);
+      throw e;
+    }
+  },
+};
+
 // Notifications
 
 export const notificationDb = {
