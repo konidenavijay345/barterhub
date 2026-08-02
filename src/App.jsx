@@ -320,7 +320,7 @@ function LoginPage({ onLogin, onNavigate }) {
           <button onClick={() => onNavigate("appeal")} style={{ background: "none", border: "none", color: "#d97706", cursor: "pointer", fontSize: 13 }}>Account suspended? Appeal</button>
         </p>
         <div style={{ marginTop: 16, padding: "10px 12px", background: "#f9fafb", borderRadius: 8, fontSize: 12, color: "#6b7280" }}>
-          Default admin: <strong>admin</strong> / <strong>admin123</strong>
+          Password Rules <strong>Strong</strong> / <strong>Secure</strong>
         </div>
       </div>
     </div>
@@ -1201,7 +1201,7 @@ function ChatsPage({ user, users, listings, exchanges, selectedThreadId, appConf
               <div style={{ padding: 12, borderTop: "0.5px solid #f3f4f6" }}>
                 <Alert type="error" msg={err || (blocked ? "Daily chat limit reached. Messaging unlocks again tomorrow." : "")} onClose={() => setErr("")} />
                 <form onSubmit={send} style={{ display: "flex", gap: 8 }}>
-                  <input value={text} onChange={e => handleTyping(e.target.value)} disabled={blocked && !editing} placeholder={editing ? "Edit your message" : blocked ? "Messaging locked for today" : "Type an encrypted message"} style={{ flex: 1 }} />
+                  <input value={text} onChange={e => handleTyping(e.target.value)} disabled={blocked && !editing} placeholder={editing ? "Edit your message" : blocked ? "Messaging locked for today" : "Type a message"} style={{ flex: 1 }} />
                   {editing && <button type="button" onClick={() => { setEditing(null); setText(""); }} style={{ padding: "9px 12px", background: "#fff", color: "#374151", border: "0.5px solid #e5e7eb", borderRadius: 8 }}>Cancel</button>}
                   <button type="submit" disabled={sending || (blocked && !editing) || !text.trim()} style={{ padding: "9px 16px", background: "#d97706", color: "white", border: "none", borderRadius: 8, opacity: sending || blocked ? 0.6 : 1 }}>{editing ? "Save" : "Send"}</button>
                 </form>
@@ -1240,7 +1240,7 @@ function ProfilePage({ user, onLogout }) {
           </div>
         </div>
         <div style={{ marginBottom: 10, background: "#f9fafb", borderRadius: 8, padding: "8px 10px" }}>
-          <p style={{ margin: "0 0 2px", fontSize: 11, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 0 }}>Encrypted public ID</p>
+          <p style={{ margin: "0 0 2px", fontSize: 11, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 0 }}>User ID</p>
           <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "#374151" }}>{publicUserId(user)}</p>
         </div>
         <p style={{ margin: 0, fontSize: 12, color: "#9ca3af" }}>Member since {new Date(user.joined).toLocaleDateString()}</p>
