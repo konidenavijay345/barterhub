@@ -319,9 +319,6 @@ function LoginPage({ onLogin, onNavigate }) {
         <p style={{ textAlign: "center", marginTop: 8, fontSize: 13 }}>
           <button onClick={() => onNavigate("appeal")} style={{ background: "none", border: "none", color: "#d97706", cursor: "pointer", fontSize: 13 }}>Account suspended? Appeal</button>
         </p>
-        <div style={{ marginTop: 16, padding: "10px 12px", background: "#f9fafb", borderRadius: 8, fontSize: 12, color: "#6b7280" }}>
-          Password Rules <strong>Strong</strong> / <strong>Secure</strong>
-        </div>
       </div>
     </div>
   );
